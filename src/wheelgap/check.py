@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import lru_cache
@@ -682,6 +682,16 @@ def _uv_reachable(source: Source, target: Target, paths: dict[int, list[str]] | 
     while queue:
         dependencies(*queue.popleft())
     return parents
+
+
+def dropped_targets(local: list[str], last: list[str], targets: Iterable[Target]) -> list[Target]:
+    """`--dist`: targets the last release had an installable wheel for but the checked files don't."""
+    last_wheels, local_wheels = wheel_tags(last), wheel_tags(local)
+    return [
+        t
+        for t in targets
+        if any(t.accepts(tags) for tags in last_wheels) and not any(t.accepts(tags) for tags in local_wheels)
+    ]
 
 
 def reachable(source: Source, target: Target) -> dict[int, Parent]:

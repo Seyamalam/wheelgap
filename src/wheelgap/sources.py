@@ -14,8 +14,15 @@ from urllib.parse import ParseResult, unquote, urlparse
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
-from packaging.utils import canonicalize_name, canonicalize_version
-from packaging.version import Version
+from packaging.utils import (
+    InvalidSdistFilename,
+    InvalidWheelFilename,
+    canonicalize_name,
+    canonicalize_version,
+    parse_sdist_filename,
+    parse_wheel_filename,
+)
+from packaging.version import InvalidVersion, Version
 
 if TYPE_CHECKING:
     from .targets import Target
@@ -2091,6 +2098,40 @@ def _has_project_table(pyproject: Path) -> bool:
         return isinstance(tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project"), dict)
     except (OSError, ValueError):
         return False
+
+
+def parse_dist(path: Path) -> Source:
+    """`--dist DIR`: the wheels and sdist of one release about to be uploaded (`python -m build`, `uv build`).
+    Name and version come from the filenames; a folder that mixes projects or versions is refused."""
+    from .check import SDIST_SUFFIXES  # sources.py is imported by check.py
+
+    try:
+        filenames = sorted(entry.name for entry in path.iterdir())
+    except OSError as e:
+        raise SourceError(f"--dist: {path}: {e.strerror or e}") from e
+    files: list[str] = []
+    names: dict[str, str] = {}
+    versions: set[Version] = set()
+    for filename in filenames:
+        try:
+            if filename.endswith(".whl"):
+                name, version, *_ = parse_wheel_filename(filename)
+            elif filename.endswith(SDIST_SUFFIXES):
+                name, version = parse_sdist_filename(filename)
+            else:
+                continue
+        except (InvalidWheelFilename, InvalidSdistFilename, InvalidVersion):
+            continue  # not a distribution filename: left out, as pip's own upload would
+        names.setdefault(str(canonicalize_name(name)), str(name))
+        versions.add(version)
+        files.append(filename)
+    if not files:
+        raise SourceError(f"--dist: {path}: no wheels or sdists")
+    if len(names) > 1 or len(versions) > 1:
+        raise SourceError(f"--dist: {path}: files for more than one project or version; build into an empty dist/")
+    display = next(iter(names.values()))
+    pkg = Package(display, str(next(iter(versions))), files=files, origin=path.name)
+    return Source(path.name, [pkg])
 
 
 def load_inputs(inputs: list[str], environment: str | None = None) -> list[Source]:

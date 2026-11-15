@@ -25,7 +25,18 @@ from . import suggest as release_suggest
 from .api import running_python
 from .badge import write_badge
 from .build import BuildInfo, describe, lookup_all, requires_for, shown
-from .check import CELL, EXPLAIN_LIMIT, Row, Status, check, explain, explain_lines, marker_holds, reachable
+from .check import (
+    CELL,
+    EXPLAIN_LIMIT,
+    Row,
+    Status,
+    check,
+    dropped_targets,
+    explain,
+    explain_lines,
+    marker_holds,
+    reachable,
+)
 from .deps import Resolver, pinned_complete, resolve_deps
 from .dockerfile import DockerfileError, read_dockerfile
 from .github import github_annotations
@@ -40,13 +51,14 @@ from .pyodide import (
     check_targets,
     load_pyodide_lock,
 )
-from .pypi import check_index_url, fill_all, keeps_locked_files, recheck_lock, split_credentials
+from .pypi import check_index_url, fill_all, keeps_locked_files, latest_release, recheck_lock, split_credentials
 from .sources import (
     Package,
     Source,
     SourceError,
     UvSelection,
     load_inputs,
+    parse_dist,
     pythons_outside_lock,
     select_pyproject_extras,
     select_uv_dependencies,
@@ -304,6 +316,13 @@ def make_parser() -> argparse.ArgumentParser:
         "--fail-on",
         choices=FAIL_ON,
         help="exit 1 on any gap ('source', the default) or only when a package can't install ('missing')",
+    )
+    p.add_argument(
+        "--dist",
+        metavar="DIR",
+        help="check the wheels and sdist in DIR as the release you're about to upload: per target, whether a "
+        "wheel installs or the sdist builds, plus a warning for each target the last PyPI release had a wheel "
+        "for that this release drops (needs the PyPI JSON API, so not with --offline or --index-url)",
     )
     p.add_argument(
         "--index-url",
@@ -846,6 +865,7 @@ def report_json(
     build_info: dict[int, BuildInfo] | None = None,
     suggestions: Suggestions | None = None,
     builds: RowBuilds | None = None,
+    dropped: dict[str, str] | None = None,
 ) -> str:
     multi_py = len({t.python for t in targets}) > 1
     gaps = [r for r in rows if not r.ok]
@@ -918,6 +938,9 @@ def report_json(
             {"name": name, "platforms": platforms} for name, platforms in ignored if platforms is not None
         ],
         "advisory": [t.label(multi_py) for t in targets if t in advisory],
+        # --dist: targets the last release had a wheel for that this one drops, {label: last version}. Absent
+        # when --dist didn't run or the comparison couldn't run (a first release has {} instead).
+        **({"dropped": dropped} if dropped is not None else {}),
         "summary": {
             "packages": len(_group_rows(rows)),
             "with_gaps": len(_group_rows(gaps)),
@@ -1115,6 +1138,7 @@ def render_markdown(
     builds: RowBuilds | None = None,
     *,
     suggestions: Suggestions | None = None,
+    dropped: dict[str, str] | None = None,
 ) -> list[str]:
     """The same report as the text output, as GitHub-flavoured Markdown (for a job summary or a PR comment)."""
     plain = Style(False)
@@ -1174,6 +1198,12 @@ def render_markdown(
     for r in rows:
         if r.package.error:
             out += [f"Could not check {_md(r.package.name)}: {_code(r.package.error)}", ""]
+    if dropped:
+        out += [
+            f"- `{_md(label)}`: {_code(version)} had a wheel, this release has none"
+            for label, version in dropped.items()
+        ]
+        out.append("")
     if args.explain and gaps:
         # Fenced, so wheel filenames, reasons and the tracker's notes need no escaping: inside a code block, Markdown
         # and HTML are shown as text. The fence is longer than any run of backticks in it, so nothing can close it.
@@ -1491,6 +1521,8 @@ def _main(argv: list[str]) -> int:
         parser.error("--suggest only adds to --explain; pass --explain too")
     if args.notes and not args.explain:
         parser.error("--notes only adds to --explain; pass --explain too")
+    if args.dist and args.inputs:
+        parser.error("--dist DIR takes no other inputs")
     try:
         if args.clear_cache:
             folder, count = cache.clear()
@@ -1593,7 +1625,7 @@ def _main(argv: list[str]) -> int:
                 )
         else:
             check_index_url()  # WHEELGAP_INDEX_URL only matters for the JSON API
-        sources = load_inputs(args.inputs or ["."], args.environment)
+        sources = [parse_dist(Path(args.dist))] if args.dist else load_inputs(args.inputs or ["."], args.environment)
         for source in sources:
             if source.passed_over is not None and not quiet:
                 print(
@@ -1688,6 +1720,17 @@ def _main(argv: list[str]) -> int:
                         "so check a lockfile instead (pip-compile, or uv pip compile)"
                     )
                 resolve_deps(source, targets, resolver)
+        if args.dist:
+            if offline:
+                raise SourceError(
+                    f"{offline_how}: --dist looks the last release up on PyPI; drop --dist, "
+                    f"or {undo_offline(offline_how)}"
+                )
+            if index_url is not None:
+                raise SourceError(
+                    "--dist's last-release check reads PyPI's JSON API, which a simple index (--index-url, or "
+                    "index-url in [tool.wheelgap]) doesn't have"
+                )
         if offline:
             require_offline(sources, offline_how, simple_index=index_url)
             if args.conda_forge:
@@ -1910,7 +1953,37 @@ def _main(argv: list[str]) -> int:
     # --advisory targets never fail the run.
     fail_statuses = GAP_STATUSES if fail_on == "source" else (Status.MISSING, Status.UNKNOWN)
     failing = [r for r in gaps if any(s in fail_statuses for s in required_statuses(r, advisory))]
-    code = 0 if args.exit_zero or not failing else 1
+    dropped: dict[str, str] | None = None  # --dist: {target label: last release's version}; None if not compared
+    if args.dist:
+        pkg = sources[0].packages[0]
+        dim = Style(use_color(args.color)).dim
+        try:
+            latest = latest_release(pkg.key)
+        except Exception as e:
+            if not quiet:
+                print(
+                    dim(
+                        f"wheelgap: note: couldn't look {pkg.name} up on the index ({type(e).__name__}), "
+                        "so --dist's dropped-target check didn't run"
+                    ),
+                    file=sys.stderr,
+                )
+        else:
+            if latest is None:
+                dropped = {}  # a first release: nothing to compare, so nothing can be dropped
+                if not quiet:
+                    print(
+                        dim(f"wheelgap: note: {pkg.name} isn't on the index yet; --dist compares nothing"),
+                        file=sys.stderr,
+                    )
+            else:
+                last_version, last_files = latest
+                pkg.found_on_pypi = True
+                multi_py = len({t.python for t in targets}) > 1
+                dropped = {
+                    t.label(multi_py): last_version for t in dropped_targets(pkg.files or [], last_files, targets)
+                }
+    code = 0 if args.exit_zero or (not failing and not dropped) else 1
     # The run passes only because --fail-on missing accepts a source build on a required target.
     source_allowed = not failing and any(Status.SOURCE in required_statuses(r, advisory) for r in gaps)
 
@@ -1967,6 +2040,7 @@ def _main(argv: list[str]) -> int:
                 build_info,
                 suggestions,
                 row_builds,
+                dropped,
             )
         )
         return code
@@ -1989,6 +2063,7 @@ def _main(argv: list[str]) -> int:
                     build_info,
                     row_builds,
                     suggestions=suggestions,
+                    dropped=dropped,
                 )
             )
         )
@@ -2006,6 +2081,9 @@ def _main(argv: list[str]) -> int:
                 print(style.dim(line))
         if ignored:
             print(style.dim("ignored: " + ignored_list(ignored)))
+        if dropped:
+            for label, version in dropped.items():
+                print(f"{label}: {version} had a wheel, this release has none")
         if pyodide_lock:  # a bundled build of another version passes, but quiet mode mustn't hide that (#75)
             differs = [
                 r
@@ -2066,6 +2144,9 @@ def _main(argv: list[str]) -> int:
     for line in target_lines(gaps, targets, style, advisory):
         print(line)
     print(gap_summary(gaps, total_pkgs, style))
+    if dropped:
+        for label, version in dropped.items():
+            print(f"{label}: {version} had a wheel, this release has none")
     if blocking := blocking_newer_python(rows, targets):
         print(blocking_line(blocking))
     if line := advisory_line(rows, targets, advisory):

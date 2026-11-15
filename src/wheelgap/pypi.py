@@ -805,6 +805,21 @@ def fill(
     return pkg
 
 
+def latest_release(name: str) -> tuple[str, list[str]] | None:
+    """The newest release of a project on the index (its JSON page's `urls`), for --dist's dropped-target check:
+    its version and filenames, or None when the project isn't on the index at all (a first release)."""
+    try:
+        data = fetch_json(f"{index_url()}/{quote(name)}/json")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    info = data.get("info") if isinstance(data, dict) else None
+    if not isinstance(info, dict) or not isinstance(version := info.get("version"), str):
+        raise ValueError("unexpected response from the index")
+    return version, [e["filename"] for e in _files(data.get("urls"))]
+
+
 def _fill_json_data(pkg: Package, data: dict, python: str | None, base: str) -> Package:
     pinned = bool(pkg.version)
     try:

@@ -134,6 +134,20 @@ directory's `pixi.lock` the lockfile read. Naming one for any other input is an 
 
 ## Index access
 
+### `--dist` {#dist}
+
+**After 0.11.0.** Check the files you're about to upload — the `dist/` folder `python -m build` or `uv build`
+leaves — as the release they make: for each target, whether one of the wheels installs there or the build falls
+back to the sdist, with the same statuses and `--explain` reasons as a lockfile row. It takes no other inputs; the
+project's name and version come from the wheel and sdist filenames, and a folder that mixes projects or versions is
+refused.
+
+The same project's newest release on PyPI is the baseline: a target it had a wheel for that these files don't is
+reported as dropped (`win-arm64: 46.0.3 had a wheel, this release has none`) and fails the run, on top of the usual
+gap exit. `--json` has them as `dropped`, a map of target label to the last release's version (`{}` when nothing was
+dropped or the project has no release to compare — a first release — and absent when the lookup failed). The
+comparison needs PyPI's JSON API, so it doesn't run with `--offline` or `--index-url`.
+
 ### `--deps` {#deps}
 
 For package names on the command line or (after 0.11.0) requirements files and dependencies declared in

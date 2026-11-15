@@ -193,6 +193,26 @@ start both a branch and a merge request pipeline, each running the job; see
 `when: always` keeps the report when the job fails, which is when you want it. See [JUnit XML](output.md#junit-xml)
 for how cells map to test results.
 
+## Before a release {#before-a-release}
+
+The other place a dropped platform gets caught is right before upload. After `python -m build` or `uv build`,
+[`--dist`](cli.md#dist) (after 0.11.0) checks the `dist/` folder itself against the last release on PyPI and fails
+when a target it had a wheel for got no wheel this time — the regression cryptography shipped when 46.0.4 lost the
+Windows on ARM wheels that every release since 46.0.0 had:
+
+```yaml
+- name: Build
+  run: uv build
+- name: Check the upload
+  run: uvx wheelgap@latest --dist dist -p 3.13 -t win-arm64,linux-aarch64,musl-aarch64
+- name: Publish
+  run: uv publish  # or twine upload dist/*
+```
+
+A project tag like `cp313` still checks every `-t` platform, so pass the targets you ship to, not just the
+interpreter you built with. Missing-wheel targets land as `source` (the sdist builds) or `missing` (no sdist); the
+dropped-target lines are what makes a release pipeline fail.
+
 ## Other CI systems
 
 - **Jenkins, Azure Pipelines, CircleCI:** publish the `--junit PATH` file with their JUnit test report step.

@@ -84,6 +84,14 @@ FAKE_INDEX = {
         "1.0": ["wheellost-1.0-cp313-cp313-manylinux_2_17_x86_64.whl", "wheellost-1.0.tar.gz"],
         "1.1": ["wheellost-1.1-cp313-cp313-win_amd64.whl", "wheellost-1.1.tar.gz"],
     },
+    # --dist: the last release had wheels for Linux and Windows on ARM; a new upload may drop one.
+    "distpkg": {
+        "1.0": [
+            "distpkg-1.0-cp313-cp313-manylinux_2_17_x86_64.whl",
+            "distpkg-1.0-cp313-cp313-win_arm64.whl",
+            "distpkg-1.0.tar.gz",
+        ],
+    },
 }
 
 

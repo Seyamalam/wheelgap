@@ -63,6 +63,10 @@ wheelgap psycopg2 uvloop numpy==2.3.4 -t windows,win-arm64
 # ...and everything they install too, with the path to each gap
 wheelgap mcp==2.3.0 --deps -t win-arm64 --explain
 
+# Before a release: do the wheels you're about to upload cover every target
+# the last release had one for? (after 0.11.0)
+wheelgap --dist dist -p 3.13 -t win-arm64,linux-aarch64
+
 # Take the Python and platform from the final stage of a Dockerfile
 # (a global `ARG PYTHON_VERSION=3.13` before the first FROM works too)
 wheelgap --dockerfile Dockerfile
