@@ -159,16 +159,16 @@ To check a package's whole dependency tree without installing it, have
 [uv](https://docs.astral.sh/uv/) resolve the tree for every platform, then check the result:
 
 ```bash
-echo mcp | uv pip compile --universal -p 3.14 - -o requirements.txt
+echo mcp | uv pip compile --universal --python-version 3.14 - -o requirements.txt
 wheelgap requirements.txt -p 3.14 -t win-arm64
 ```
 
 - `echo mcp |` feeds the requirements to compile on standard input (`-`); name
-  any package or pin, one per line. The `-p 3.14` on both commands is the
-  Python version to resolve and check for.
+  any package or pin, one per line. `--python-version 3.14` is the Python uv
+  resolves for, and `-p 3.14` the one wheelgap checks; keep them the same.
 - `--universal` keeps the environment markers in the compiled file, so each
   target gets its own resolved set: a dependency pip installs only on Windows
-  shows `n/a` on the Linux targets instead of a false gap. Without it,
+  shows `–` (n/a) on the Linux targets instead of a false gap. Without it,
   `uv pip compile` resolves for the machine it runs on.
 - On 15 November 2026 this finds `cryptography 50.0.2` (`● source`) under
   `mcp`: `pip install mcp` on Windows on ARM compiles it. Resolved versions
