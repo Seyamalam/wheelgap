@@ -1200,7 +1200,7 @@ def render_markdown(
             out += [f"Could not check {_md(r.package.name)}: {_code(r.package.error)}", ""]
     if dropped:
         out += [
-            f"- `{_md(label)}`: {_code(version)} had a wheel, this release has none"
+            f"- {_code(label)}: {_code(version)} had a wheel, this release has none"
             for label, version in dropped.items()
         ]
         out.append("")
@@ -1721,6 +1721,8 @@ def _main(argv: list[str]) -> int:
                     )
                 resolve_deps(source, targets, resolver)
         if args.dist:
+            if args.online:
+                raise SourceError("--dist checks the files in DIR as they are; --online would check PyPI's instead")
             if offline:
                 raise SourceError(
                     f"{offline_how}: --dist looks the last release up on PyPI; drop --dist, "
@@ -1957,31 +1959,30 @@ def _main(argv: list[str]) -> int:
     if args.dist:
         pkg = sources[0].packages[0]
         dim = Style(use_color(args.color)).dim
-        try:
-            if env := origin.index_env():
-                # The project may live on that index, and PyPI's project of the same name may not be this one.
-                raise LookupError(f"{env} is set")
-            latest = previous_release(pkg.key, pkg.version or "")
-        except LookupError as e:
-            if not quiet:
+        # These notes print even with -q: without them a gate that didn't compare would pass silently.
+        if env := origin.index_env():
+            # The project may live on that index, and PyPI's project of the same name may not be this one.
+            print(
+                dim(
+                    f"wheelgap: note: {env} is set, so --dist didn't compare {pkg.name} with PyPI's releases "
+                    "(it may not be the same project)"
+                ),
+                file=sys.stderr,
+            )
+        else:
+            try:
+                latest = previous_release(pkg.key, pkg.version or "")
+            except Exception as e:
+                latest = e
+            if isinstance(latest, Exception):
                 print(
                     dim(
-                        f"wheelgap: note: {e}, so --dist didn't compare {pkg.name} with PyPI's releases "
-                        "(it may not be the same project)"
-                    ),
-                    file=sys.stderr,
-                )
-        except Exception as e:
-            if not quiet:
-                print(
-                    dim(
-                        f"wheelgap: note: couldn't look {pkg.name} up on the index ({type(e).__name__}), "
+                        f"wheelgap: note: couldn't look {pkg.name} up on the index ({type(latest).__name__}), "
                         "so --dist's dropped-target check didn't run"
                     ),
                     file=sys.stderr,
                 )
-        else:
-            if latest is None:
+            elif latest is None:
                 dropped = {}  # a first release: nothing to compare, so nothing can be dropped
                 if not quiet:
                     print(
@@ -1992,12 +1993,16 @@ def _main(argv: list[str]) -> int:
                 last_version, last_files = latest
                 pkg.found_on_pypi = True
                 multi_py = len({t.python for t in targets}) > 1
+                # As for gaps: an --ignore'd target or package, and an --advisory target, never fail the run.
+                skip = ignore_on.get(pkg.key, set())
                 dropped = {
-                    t.label(multi_py): last_version for t in dropped_targets(pkg.files or [], last_files, targets)
+                    t.label(multi_py): last_version
+                    for t in dropped_targets(pkg.files or [], last_files, targets)
+                    if pkg.key not in ignore and t.platform not in skip and t not in advisory
                 }
     code = 0 if args.exit_zero or (not failing and not dropped) else 1
     # The run passes only because --fail-on missing accepts a source build on a required target.
-    source_allowed = not failing and any(Status.SOURCE in required_statuses(r, advisory) for r in gaps)
+    source_allowed = not failing and not dropped and any(Status.SOURCE in required_statuses(r, advisory) for r in gaps)
 
     build_info: dict[int, BuildInfo] | None = None  # None: not asked for
     off_by = origin.other_index(index_url) or origin.index_env()  # no package counts as PyPI's for sure
@@ -2151,7 +2156,7 @@ def _main(argv: list[str]) -> int:
         what = "The 1 package has" if total_pkgs == 1 else f"All {total_pkgs} packages have"
         every = f"{'every one of ' if n_t > 1 else ''}{n_t} target{'s' * (n_t > 1)}{apart_from_ignored(rows)}"
         print(style.green(f"✓ {what} a wheel for {every}."))
-        return 0
+        return code
 
     for line in target_lines(gaps, targets, style, advisory):
         print(line)

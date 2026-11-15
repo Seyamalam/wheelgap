@@ -125,3 +125,51 @@ def test_an_index_variable_skips_the_comparison(fake_pypi, capsys, tmp_path, mon
     captured = capsys.readouterr()
     assert "dropped" not in json.loads(captured.out)
     assert "PIP_INDEX_URL is set, so --dist didn't compare distpkg" in captured.err
+
+
+def test_dist_refuses_online(fake_pypi, capsys, tmp_path):
+    folder = dist(tmp_path, LINUX_WHEEL)
+    assert check(folder, "--online") == 2
+    assert "--online would check PyPI's instead" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("args", [("--advisory", "win-arm64"), ("--ignore", "distpkg:win-arm64")])
+def test_an_advisory_or_ignored_target_isnt_a_drop(fake_pypi, capsys, tmp_path, args):
+    folder = dist(tmp_path, LINUX_WHEEL, SDIST)  # drops win-arm64, which these runs don't hold against it
+    code = check(folder, *args)
+    assert "had a wheel" not in capsys.readouterr().out
+    assert code == 0
+
+
+def test_a_drop_with_fail_on_missing_doesnt_say_the_run_passes(fake_pypi, capsys, tmp_path):
+    folder = dist(tmp_path, LINUX_WHEEL, SDIST)
+    assert check(folder, "--fail-on", "missing") == 1
+    assert "this run passes" not in capsys.readouterr().out
+
+
+def test_a_drop_in_markdown(fake_pypi, capsys, tmp_path):
+    folder = dist(tmp_path, LINUX_WHEEL, SDIST)
+    assert check(folder, "--markdown") == 1
+    assert "- `win-arm64`: `1.0` had a wheel, this release has none" in capsys.readouterr().out
+
+
+def test_a_failed_lookup_is_noted_even_with_quiet(fake_pypi, capsys, tmp_path, monkeypatch):
+    from wheelgap import cli
+
+    def fail(name, version):
+        raise OSError("no route")
+
+    monkeypatch.setattr(cli, "previous_release", fail)
+    folder = dist(tmp_path, LINUX_WHEEL, WIN_ARM_WHEEL, SDIST)
+    assert check(folder, "-q") == 0
+    assert "--dist's dropped-target check didn't run" in capsys.readouterr().err
+
+
+def test_a_wheel_the_python_couldnt_use_isnt_a_drop(fake_pypi, capsys, tmp_path, monkeypatch):
+    import conftest
+
+    old = {"filename": "pyonly-1.0-py3-none-win_arm64.whl", "requires_python": ">=3.14"}
+    monkeypatch.setitem(conftest.FAKE_INDEX, "pyonly", {"1.0": [old, "pyonly-1.0.tar.gz"]})
+    folder = dist(tmp_path, "pyonly-1.1.tar.gz")  # checked on 3.13, which that wheel never served
+    assert check(folder, "--json") == 1  # the source build is still a gap
+    assert json.loads(capsys.readouterr().out)["dropped"] == {}

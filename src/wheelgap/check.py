@@ -684,13 +684,29 @@ def _uv_reachable(source: Source, target: Target, paths: dict[int, list[str]] | 
     return parents
 
 
-def dropped_targets(local: list[str], last: list[str], targets: Iterable[Target]) -> list[Target]:
-    """`--dist`: targets the last release had an installable wheel for but the checked files don't."""
-    last_wheels, local_wheels = wheel_tags(last), wheel_tags(local)
+def dropped_targets(local: list[str], last: list[tuple[str, str | None]], targets: Iterable[Target]) -> list[Target]:
+    """`--dist`: targets the last release had an installable wheel for but the checked files don't. `last` is the
+    previous release's files as (filename, Requires-Python): a wheel whose Requires-Python leaves the target's Python
+    out wasn't installable there, so not shipping one now isn't a drop."""
+    local_wheels = wheel_tags(local)
+    last_wheels: list[tuple[frozenset[Tag], str | None]] = []
+    for name, requires in last:
+        if name.endswith(".whl") and (tags := _parsed_tags(name)) is not None:
+            last_wheels.append((tags, requires))
+
+    def fits(requires: str | None, target: Target) -> bool:
+        if requires is None:
+            return True
+        try:  # a real interpreter is on a later patch than X.Y.0, as pip compares it
+            return SpecifierSet(requires).contains(f"{target.major}.{target.minor}.99")
+        except InvalidSpecifier:
+            return True
+
     return [
         t
         for t in targets
-        if any(t.accepts(tags) for tags in last_wheels) and not any(t.accepts(tags) for tags in local_wheels)
+        if any(t.accepts(tags) and fits(requires, t) for tags, requires in last_wheels)
+        and not any(t.accepts(tags) for tags in local_wheels)
     ]
 
 

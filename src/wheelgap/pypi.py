@@ -805,11 +805,12 @@ def fill(
     return pkg
 
 
-def previous_release(name: str, version: str) -> tuple[str, list[str]] | None:
+def previous_release(name: str, version: str) -> tuple[str, list[tuple[str, str | None]]] | None:
     """For --dist's dropped-target check: the newest release of the project older than `version`, with its
-    files that aren't yanked. Older, not newest: a 1.9.3 maintenance release is compared with 1.9.2, not with 2.0.
-    Pre-releases count only when `version` is one, and a release whose every file is yanked is passed over. None
-    when there's no such release (a first release, or the project isn't on the index at all)."""
+    files that aren't yanked, each as (filename, its Requires-Python or None). Older, not newest: a 1.9.3
+    maintenance release is compared with 1.9.2, not with 2.0. Pre-releases count only when `version` is one, and a
+    release whose every file is yanked is passed over. None when there's no such release (a first release, or the
+    project isn't on the index at all)."""
     try:
         data = fetch_json(f"{index_url()}/{quote(name)}/json", max_bytes=RELEASES_MAX_BYTES)
     except urllib.error.HTTPError as e:
@@ -820,11 +821,15 @@ def previous_release(name: str, version: str) -> tuple[str, list[str]] | None:
     if not isinstance(releases, dict):
         raise ValueError("the index gave no release list")
     current = Version(version)
-    older: list[tuple[Version, str, list[str]]] = []
+    older: list[tuple[Version, str, list[tuple[str, str | None]]]] = []
     for text, entries in releases.items():
         try:
             v = Version(text)
-            live = [e["filename"] for e in _files(entries) if not e.get("yanked")]
+            live = [
+                (e["filename"], e["requires_python"] if isinstance(e.get("requires_python"), str) else None)
+                for e in _files(entries)
+                if not e.get("yanked")
+            ]
         except (InvalidVersion, ValueError):
             continue
         if v < current and live and (current.is_prerelease or not v.is_prerelease):
