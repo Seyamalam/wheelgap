@@ -136,23 +136,22 @@ directory's `pixi.lock` the lockfile read. Naming one for any other input is an 
 
 ### `--dist` {#dist}
 
-**After 0.11.0.** Check the files you're about to upload — the `dist/` folder `python -m build` or `uv build`
-leaves — as the release they make: for each target, whether one of the wheels installs there or the build falls
-back to the sdist, with the same statuses and `--explain` reasons as a lockfile row. It takes no other inputs; the
-project's name and version come from the wheel and sdist filenames, and a folder that mixes projects or versions is
-refused.
+**After 0.11.0.** Check the files you're about to upload — the `dist/` folder `python -m build` or `uv build` leaves —
+as the release they make: for each target, whether one of the wheels installs there or the build falls back to the
+sdist, with the same statuses and `--explain` reasons as a lockfile row. It takes no other inputs; the project's name
+and version come from the wheel and sdist filenames, and a folder that mixes projects or versions is refused.
 
-The baseline is the newest release on PyPI older than this one (so a 1.9.3 maintenance release is compared with
-1.9.2, not with 2.0), looked up by the project's name (a final release ignores earlier pre-releases, so a 1.0 whose only predecessor is
-1.0rc1 counts as a first release): a target it had a wheel for that these files don't, on a Python that wheel's
-Requires-Python allowed, is reported as dropped (`win-arm64: 46.0.3 had a wheel, this release has none`) and fails the run, on top of the usual
-gap exit. `--json` has them as `dropped`, a map of target label to the last release's version (`{}` when nothing was
-dropped or the project has no release to compare — a first release — and absent when the lookup failed). The
-comparison needs PyPI's JSON API, so `--dist` is an error with `--offline` or `--index-url` (and with `--online`,
-which would check PyPI's files instead of these). An `--ignore`d or `--advisory` target is left out, as for gaps. The
-comparison is skipped with a note (shown even with `-q`) when a pip or uv index variable (`PIP_INDEX_URL` and the like) is set, since PyPI's project of that name may not be
-yours.
-
+The baseline is the newest release on PyPI older than this one (so a 1.9.3 maintenance release is compared with 1.9.2,
+not with 2.0), looked up by the project's name (a final release ignores earlier pre-releases, so a 1.0 whose only
+predecessor is 1.0rc1 counts as a first release): a target it had a wheel for that these files don't, on a Python that
+wheel's Requires-Python allowed, is reported as dropped (`win-arm64: 46.0.3 had a wheel, this release has none`) and
+fails the run, on top of the usual gap exit. `--json` has them as `dropped`, a map of target label to the last release's
+version (`{}` when nothing was dropped or the project has no release to compare — a first release — and absent when the
+lookup failed). The comparison needs PyPI's JSON API, so `--dist` is an error with `--offline` or `--index-url` (and
+with `--online`, which would check PyPI's files instead of these). An `--ignore`d or `--advisory` target is left out, as
+for gaps. The comparison is skipped with a note when a pip or uv index variable (`PIP_INDEX_URL` and the like) is set,
+since PyPI's project of that name may not be yours. If the previous release couldn't be looked up, a note says the comparison didn't run; both notes show even
+with `-q`, so a gate that didn't compare never passes silently.
 ### `--deps` {#deps}
 
 For package names on the command line or (after 0.11.0) requirements files and dependencies declared in

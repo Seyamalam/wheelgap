@@ -148,9 +148,9 @@ def test_a_drop_with_fail_on_missing_doesnt_say_the_run_passes(fake_pypi, capsys
 
 
 def test_a_drop_in_markdown(fake_pypi, capsys, tmp_path):
-    folder = dist(tmp_path, LINUX_WHEEL, SDIST)
+    folder = dist(tmp_path, WIN_ARM_WHEEL, SDIST)  # drops linux-x86_64, whose underscore Markdown mustn't escape
     assert check(folder, "--markdown") == 1
-    assert "- `win-arm64`: `1.0` had a wheel, this release has none" in capsys.readouterr().out
+    assert "- `linux-x86_64`: `1.0` had a wheel, this release has none" in capsys.readouterr().out
 
 
 def test_a_failed_lookup_is_noted_even_with_quiet(fake_pypi, capsys, tmp_path, monkeypatch):
