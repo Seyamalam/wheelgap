@@ -74,7 +74,7 @@ def test_a_new_target_is_not_a_drop(fake_pypi, capsys, tmp_path):
 def test_a_first_release_compares_nothing(fake_pypi, capsys, tmp_path):
     folder = dist(tmp_path, "brandnew-1.0-py3-none-any.whl")  # not on the index
     assert check(folder) == 0
-    assert "brandnew isn't on the index yet" in capsys.readouterr().err
+    assert "brandnew has no earlier release on the index" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -109,3 +109,19 @@ def test_dist_needs_the_json_api(fake_pypi, capsys, tmp_path):
     assert "--offline: --dist looks the last release up on PyPI" in capsys.readouterr().err
     assert check(folder, "--index-url", "https://example.org/simple") == 2
     assert "a simple index" in capsys.readouterr().err
+
+
+def test_a_maintenance_release_is_compared_with_the_release_before_it(fake_pypi, capsys, tmp_path):
+    # 1.1 comes after 1.0, which had no Windows on ARM wheel: the newer 2.0 having one isn't a drop.
+    folder = dist(tmp_path, "distline-1.1-cp313-cp313-manylinux_2_17_x86_64.whl", "distline-1.1.tar.gz")
+    check(folder, "--json")
+    assert json.loads(capsys.readouterr().out)["dropped"] == {}
+
+
+def test_an_index_variable_skips_the_comparison(fake_pypi, capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("PIP_INDEX_URL", "https://example.invalid/simple")
+    folder = dist(tmp_path, LINUX_WHEEL, SDIST)  # would drop win-arm64 against PyPI's distpkg
+    check(folder, "--json")
+    captured = capsys.readouterr()
+    assert "dropped" not in json.loads(captured.out)
+    assert "PIP_INDEX_URL is set, so --dist didn't compare distpkg" in captured.err

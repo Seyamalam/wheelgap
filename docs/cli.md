@@ -142,11 +142,14 @@ back to the sdist, with the same statuses and `--explain` reasons as a lockfile 
 project's name and version come from the wheel and sdist filenames, and a folder that mixes projects or versions is
 refused.
 
-The same project's newest release on PyPI is the baseline: a target it had a wheel for that these files don't is
+The baseline is the newest release on PyPI older than this one (so a 1.9.3 maintenance release is compared with
+1.9.2, not with 2.0), looked up by the project's name: a target it had a wheel for that these files don't is
 reported as dropped (`win-arm64: 46.0.3 had a wheel, this release has none`) and fails the run, on top of the usual
 gap exit. `--json` has them as `dropped`, a map of target label to the last release's version (`{}` when nothing was
 dropped or the project has no release to compare — a first release — and absent when the lookup failed). The
-comparison needs PyPI's JSON API, so it doesn't run with `--offline` or `--index-url`.
+comparison needs PyPI's JSON API, so it doesn't run with `--offline` or `--index-url`, and it's skipped with a note
+when a pip or uv index variable (`PIP_INDEX_URL` and the like) is set, since PyPI's project of that name may not be
+yours.
 
 ### `--deps` {#deps}
 

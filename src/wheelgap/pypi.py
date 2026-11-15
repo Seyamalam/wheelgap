@@ -805,19 +805,34 @@ def fill(
     return pkg
 
 
-def latest_release(name: str) -> tuple[str, list[str]] | None:
-    """The newest release of a project on the index (its JSON page's `urls`), for --dist's dropped-target check:
-    its version and filenames, or None when the project isn't on the index at all (a first release)."""
+def previous_release(name: str, version: str) -> tuple[str, list[str]] | None:
+    """For --dist's dropped-target check: the newest release of the project older than `version`, with its
+    files that aren't yanked. Older, not newest: a 1.9.3 maintenance release is compared with 1.9.2, not with 2.0.
+    Pre-releases count only when `version` is one, and a release whose every file is yanked is passed over. None
+    when there's no such release (a first release, or the project isn't on the index at all)."""
     try:
-        data = fetch_json(f"{index_url()}/{quote(name)}/json")
+        data = fetch_json(f"{index_url()}/{quote(name)}/json", max_bytes=RELEASES_MAX_BYTES)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
         raise
-    info = data.get("info") if isinstance(data, dict) else None
-    if not isinstance(info, dict) or not isinstance(version := info.get("version"), str):
-        raise ValueError("unexpected response from the index")
-    return version, [e["filename"] for e in _files(data.get("urls"))]
+    releases = data.get("releases") if isinstance(data, dict) else None
+    if not isinstance(releases, dict):
+        raise ValueError("the index gave no release list")
+    current = Version(version)
+    older: list[tuple[Version, str, list[str]]] = []
+    for text, entries in releases.items():
+        try:
+            v = Version(text)
+            live = [e["filename"] for e in _files(entries) if not e.get("yanked")]
+        except (InvalidVersion, ValueError):
+            continue
+        if v < current and live and (current.is_prerelease or not v.is_prerelease):
+            older.append((v, text, live))
+    if not older:
+        return None
+    _, text, live = max(older)
+    return text, live
 
 
 def _fill_json_data(pkg: Package, data: dict, python: str | None, base: str) -> Package:

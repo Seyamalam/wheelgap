@@ -85,6 +85,11 @@ FAKE_INDEX = {
         "1.1": ["wheellost-1.1-cp313-cp313-win_amd64.whl", "wheellost-1.1.tar.gz"],
     },
     # --dist: the last release had wheels for Linux and Windows on ARM; a new upload may drop one.
+    # --dist on a maintenance line: 1.0 had a Linux wheel only, the newer 2.0 adds Windows on ARM.
+    "distline": {
+        "1.0": ["distline-1.0-cp313-cp313-manylinux_2_17_x86_64.whl", "distline-1.0.tar.gz"],
+        "2.0": ["distline-2.0-cp313-cp313-manylinux_2_17_x86_64.whl", "distline-2.0-cp313-cp313-win_arm64.whl"],
+    },
     "distpkg": {
         "1.0": [
             "distpkg-1.0-cp313-cp313-manylinux_2_17_x86_64.whl",

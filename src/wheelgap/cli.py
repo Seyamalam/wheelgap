@@ -51,7 +51,7 @@ from .pyodide import (
     check_targets,
     load_pyodide_lock,
 )
-from .pypi import check_index_url, fill_all, keeps_locked_files, latest_release, recheck_lock, split_credentials
+from .pypi import check_index_url, fill_all, keeps_locked_files, previous_release, recheck_lock, split_credentials
 from .sources import (
     Package,
     Source,
@@ -1958,7 +1958,19 @@ def _main(argv: list[str]) -> int:
         pkg = sources[0].packages[0]
         dim = Style(use_color(args.color)).dim
         try:
-            latest = latest_release(pkg.key)
+            if env := origin.index_env():
+                # The project may live on that index, and PyPI's project of the same name may not be this one.
+                raise LookupError(f"{env} is set")
+            latest = previous_release(pkg.key, pkg.version or "")
+        except LookupError as e:
+            if not quiet:
+                print(
+                    dim(
+                        f"wheelgap: note: {e}, so --dist didn't compare {pkg.name} with PyPI's releases "
+                        "(it may not be the same project)"
+                    ),
+                    file=sys.stderr,
+                )
         except Exception as e:
             if not quiet:
                 print(
@@ -1973,7 +1985,7 @@ def _main(argv: list[str]) -> int:
                 dropped = {}  # a first release: nothing to compare, so nothing can be dropped
                 if not quiet:
                     print(
-                        dim(f"wheelgap: note: {pkg.name} isn't on the index yet; --dist compares nothing"),
+                        dim(f"wheelgap: note: {pkg.name} has no earlier release on the index; --dist compares nothing"),
                         file=sys.stderr,
                     )
             else:
