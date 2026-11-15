@@ -1678,10 +1678,15 @@ def _main(argv: list[str]) -> int:
                 if pinned_complete(source):
                     print(
                         f"wheelgap: note: {source.label} already lists what it installs "
-                        "(every requirement pinned); checking it as written",
+                        "(every requirement pinned, with hashes); checking it as written",
                         file=sys.stderr,
                     )
                     continue
+                if source.deps_blockers:
+                    raise SourceError(
+                        f"{source.label}: --deps can't follow this the way pip does ({source.deps_blockers[0]}), "
+                        "so check a lockfile instead (pip-compile, or uv pip compile)"
+                    )
                 resolve_deps(source, targets, resolver)
         if offline:
             require_offline(sources, offline_how, simple_index=index_url)

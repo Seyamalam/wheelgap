@@ -57,6 +57,8 @@ INDEX = {
     # noarm 2.0 has only a Linux wheel and no sdist, so pip on Windows on ARM installs 1.0; nowhere never installs.
     "noarm": {"1.0": release(files=(WIN_ARM,)), "2.0": release(files=(LINUX,), sdist=False)},
     "nowhere": {"1.0": release(files=(LINUX,), sdist=False), "2.0": release(files=(LINUX,), sdist=False)},
+    # Its newest release is an sdist only; the one before has a Windows ARM wheel, which --only-binary makes pip pick.
+    "sdnew": {"1.0": release(files=(WIN_ARM,)), "2.0": release(files=())},
     "egg": {"1.0": release(files=(WIN_ARM,)), "2.0": release(files=("py3.14.egg",), sdist=False)},
     "yq": {"1.0": release(["c"], yanked=True, json_requires=[])},  # yanked: its wheel still says what it needs
     # No Windows ARM or pure wheel, so a build from source there: two platforms' wheels must agree.
@@ -409,3 +411,42 @@ def test_a_source_build_trusts_other_platforms_wheels_only_when_they_agree(index
     assert errors["differ"].startswith("couldn't read its dependencies: its wheels for other platforms list different")
     assert resolve("differ", target=LIN)[0] == {"differ": "1.0", "c": "2.0"}  # its own wheel: no doubt
     assert resolve("sameos")[1]["sameos"].startswith("couldn't read its dependencies: its wheels for other")
+
+
+def test_requirements_only_binary_picks_the_release_pip_would(index, capsys, tmp_path):
+    req = tmp_path / "requirements.txt"
+    req.write_text("--only-binary :all:\nsdnew\n", encoding="utf-8")
+    assert main([str(req), "--deps", "-p", "3.14", "-t", "win-arm64", "--json", "--no-cache"]) == 0
+    assert [(p["name"], p["version"]) for p in json.loads(capsys.readouterr().out)["packages"]] == [("sdnew", "1.0")]
+    req.write_text("sdnew\n", encoding="utf-8")  # without it, pip builds the newest from its sdist
+    assert main([str(req), "--deps", "-p", "3.14", "-t", "win-arm64", "--json", "--no-cache", "--all"]) == 1
+    assert [(p["name"], p["version"]) for p in json.loads(capsys.readouterr().out)["packages"]] == [("sdnew", "2.0")]
+
+
+def test_requirements_with_via_comments_but_no_hashes_are_still_resolved(index, capsys, tmp_path):
+    req = tmp_path / "requirements.txt"
+    req.write_text("plain==1.0\n    # via app\n", encoding="utf-8")  # hand-edited: lib, its dependency, isn't listed
+    main([str(req), "--deps", "-p", "3.14", "-t", "win-arm64", "--json", "--no-cache", "--all"])
+    assert "lib" in {p["name"] for p in json.loads(capsys.readouterr().out)["packages"]}
+
+
+@pytest.mark.parametrize(
+    ("constraint", "message"),
+    [
+        ('crypt<2; python_version < "3.15"', "the constraint on crypt has a marker"),
+        ("crypt @ https://example.invalid/crypt-1.0.tar.gz", "the constraint on crypt isn't an index release"),
+    ],
+)
+def test_requirements_deps_refuses_constraints_it_cant_follow(index, capsys, tmp_path, constraint, message):
+    (tmp_path / "constraints.txt").write_text(constraint + "\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("-c constraints.txt\napp==1.0\n", encoding="utf-8")
+    assert main([str(tmp_path / "requirements.txt"), "--deps", "-p", "3.14", "-t", "win-arm64", "--no-cache"]) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_requirements_deps_refuses_a_file_that_names_another_index(tmp_path, index, capsys):
+    req = tmp_path / "requirements.txt"
+    req.write_text("--index-url https://example.invalid/simple\nprivate-package\n", encoding="utf-8")
+    assert main([str(req), "--deps"]) == 2
+    assert "configures an installer index or source" in capsys.readouterr().err
+    assert index == []

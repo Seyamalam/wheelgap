@@ -21,6 +21,7 @@ from __future__ import annotations
 import email.parser
 import urllib.error
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
@@ -64,6 +65,9 @@ class Resolver:
         self._projects: dict[str, dict | Exception] = {}
         self._requires: dict[tuple[str, str, str], list[Requirement] | Exception] = {}
         self.names: dict[str, str] = {}  # key -> the name the index gives it
+        # A requirements file's --no-binary/--only-binary policy (key -> (no_binary, only_binary)), set by
+        # resolve_deps for the source being resolved: pip picks releases under it, so pick() does too.
+        self.policy: Callable[[str], tuple[bool, bool]] | None = None
         self._metadata: dict[str, list[str] | Exception] = {}  # a wheel's .metadata URL -> its Requires-Dist
 
     def _project(self, key: str) -> dict:
@@ -177,7 +181,12 @@ class Resolver:
             ]
             if live:
                 usable[version] = text
-            if any(e["filename"].endswith(SDIST_SUFFIXES) or rejection(e["filename"], target) is None for e in live):
+            no_binary, only_binary = self.policy(key) if self.policy else (False, False)
+            if any(
+                (e["filename"].endswith(SDIST_SUFFIXES) and not only_binary)
+                or (e["filename"].endswith(".whl") and not no_binary and rejection(e["filename"], target) is None)
+                for e in live
+            ):
                 installable[version] = text
         combined = SpecifierSet(",".join(s for s in specs if s))
         chosen = max(combined.filter(installable), default=None) or max(combined.filter(usable), default=None)
@@ -309,8 +318,8 @@ def _lookup_error(e: Exception) -> str:
 
 
 def pinned_complete(source: Source) -> bool:
-    """A requirements file that's already pip-compile output: every requirement is pinned and the file says so
-    (--hash lines or `# via` comments), so --deps has nothing to resolve."""
+    """A requirements file that's already complete: every requirement pinned, with --hash lines (in hash mode pip
+    refuses any dependency the file doesn't pin), so --deps has nothing to resolve."""
     return source.compiled and all(
         p.version is not None and not p.spec and not p.error for p in source.packages if not p.skip
     )
@@ -319,6 +328,7 @@ def pinned_complete(source: Source) -> bool:
 def resolve_deps(source: Source, targets: list[Target], resolver: Resolver | None = None) -> None:
     """Replace the source's packages with what its requirements install on each target."""
     resolver = resolver or Resolver()
+    resolver.policy = source.format_control.policy if source.requirements and source.format_control else None
     roots = [Requirement(text) for text in source.specs]
     kept = [p for p in source.packages if p.skip]  # a name @ URL: nothing to look up, as without --deps
     roots = [r for r in roots if not r.url]

@@ -186,6 +186,8 @@ class Source:
     # A requirements file's constraint problems (a marker, a non-index constraint, conflicting pins): the
     # resolved package gets the error, as the requirement's own row does without --deps.
     constraint_errors: dict[str, str] = field(default_factory=dict)
+    # A requirements file's constraints --deps can't apply the way pip does (a marker, a URL, an error): it refuses.
+    deps_blockers: list[str] = field(default_factory=list)
     # A requirements file's --no-binary/--only-binary policy, applied to the resolved packages too.
     format_control: _FormatControl | None = None
     # --deps (deps.py): per target, the packages installed and the dependency path to each, keyed by index into
@@ -1477,7 +1479,13 @@ def parse_requirements(path: Path) -> Source:
             constraint_errors[pkg.key] = pkg.error
     # A constraint on a package the file doesn't require only ever counts as a transitive dep's specifier,
     # which --deps sees; a constraint the file already called out as broken is left to constraint_errors.
+    deps_blockers: list[str] = []
     for entry in constraints:
+        # pip applies these only on some targets, or installs from elsewhere; --deps can't follow that yet.
+        if entry.markers:
+            deps_blockers.append(f"the constraint on {entry.name} has a marker")
+        elif entry.skip:
+            deps_blockers.append(f"the constraint on {entry.name} isn't an index release ({entry.skip})")
         if entry.markers or entry.skip or entry.key in constraint_errors:
             continue
         # A bare name constrains nothing; a version or range does.
@@ -1492,10 +1500,11 @@ def parse_requirements(path: Path) -> Source:
         requirements=True,
         pypi_only=not index_options and not _nearby_config_names_an_index(path),
         specs=req_lines,
-        compiled=bool(compiler_signs),
+        compiled="hash" in compiler_signs,  # hash mode makes pip refuse anything unpinned: the file is complete
         constraint_specs=constraint_specs,
         constraint_errors=constraint_errors,
         format_control=format_control,
+        deps_blockers=deps_blockers + [f"{key}: {error}" for key, error in constraint_errors.items()],
     )
 
 
