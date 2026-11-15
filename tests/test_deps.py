@@ -317,15 +317,14 @@ def test_requirements_constraints_apply_to_the_resolved_tree(index, capsys, tmp_
     assert code == 0
 
 
-def test_a_broken_constraint_stays_a_soft_error_under_deps(index, capsys, tmp_path):
+def test_a_broken_constraint_makes_deps_refuse(index, capsys, tmp_path):
     (tmp_path / "constraints.txt").write_text("app==1.0\napp==2.0\n", encoding="utf-8")
     (tmp_path / "requirements.txt").write_text("-c constraints.txt\napp\n", encoding="utf-8")
-    code = main(
-        [str(tmp_path / "requirements.txt"), "--deps", "-p", "3.14", "-t", "win-arm64", "--explain", "--no-cache"]
-    )
-    out = capsys.readouterr().out
-    assert "unknown" in out and "conflicting exact versions" in out
-    assert code == 1  # the package reports unknown, as it does without --deps; the run isn't aborted
+    code = main([str(tmp_path / "requirements.txt"), "--deps", "-p", "3.14", "-t", "win-arm64", "--no-cache"])
+    err = capsys.readouterr().err
+    # Without --deps the package reports unknown; resolving its tree would rest on a guess, so --deps refuses.
+    assert "--deps can't follow this the way pip does" in err and "conflicting exact versions" in err
+    assert code == 2
 
 
 def test_pyproject_deps_follow_selected_extras_and_target_markers(tmp_path, index, capsys):

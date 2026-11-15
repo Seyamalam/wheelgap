@@ -357,8 +357,5 @@ def resolve_deps(source: Source, targets: list[Target], resolver: Resolver | Non
             for p in packages:
                 if not p.skip:
                     p.no_binary, p.only_binary = fc.policy(p.key)
-        for p in packages:
-            if p.error is None and (error := source.constraint_errors.get(p.key)):
-                p.error = error
     source.packages = packages
     source.deps_paths = deps_paths
