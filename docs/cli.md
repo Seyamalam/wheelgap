@@ -150,8 +150,8 @@ version (`{}` when nothing was dropped or the project has no release to compare 
 lookup failed). The comparison needs PyPI's JSON API, so `--dist` is an error with `--offline` or `--index-url` (and
 with `--online`, which would check PyPI's files instead of these). An `--ignore`d or `--advisory` target is left out, as
 for gaps. The comparison is skipped with a note when a pip or uv index variable (`PIP_INDEX_URL` and the like) is set,
-since PyPI's project of that name may not be yours. If the previous release couldn't be looked up, a note says the comparison didn't run; both notes show even
-with `-q`, so a gate that didn't compare never passes silently.
+since PyPI's project of that name may not be yours. If the previous release couldn't be looked up, a note says the
+comparison didn't run; both notes show even with `-q`, so a gate that didn't compare never passes silently.
 ### `--deps` {#deps}
 
 For package names on the command line or (after 0.11.0) requirements files and dependencies declared in
