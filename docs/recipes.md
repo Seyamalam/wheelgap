@@ -174,8 +174,9 @@ wheelgap requirements.txt -p 3.14 -t win-arm64
   `mcp`: `pip install mcp` on Windows on ARM compiles it. Resolved versions
   change over time, so yours may differ.
 
-For a quick check without writing a file, `wheelgap mcp --deps -p 3.14 -t win-arm64` resolves the tree itself from
-PyPI's metadata (see [`--deps`](cli.md#deps)). It uses wheelgap's own resolver rather than the one pip runs; a
+For a quick check without writing a file, `wheelgap mcp==2.3.0 --deps -p 3.14 -t win-arm64` resolves the tree itself
+from PyPI's metadata (see [`--deps`](cli.md#deps)); pin the version, since `wheelgap mcp` on its own starts the MCP
+server. It uses wheelgap's own resolver rather than the one pip runs; a
 compiled file like the one above gives the resolution a real resolver picked.
 
 ## Using wheelgap from an agent or script
