@@ -1973,33 +1973,35 @@ def _main(argv: list[str]) -> int:
             try:
                 latest = previous_release(pkg.key, pkg.version or "")
             except Exception as e:
-                latest = e
-            if isinstance(latest, Exception):
                 print(
                     dim(
-                        f"wheelgap: note: couldn't look {pkg.name} up on the index ({type(latest).__name__}), "
+                        f"wheelgap: note: couldn't look {pkg.name} up on the index ({type(e).__name__}), "
                         "so --dist's dropped-target check didn't run"
                     ),
                     file=sys.stderr,
                 )
-            elif latest is None:
-                dropped = {}  # a first release: nothing to compare, so nothing can be dropped
-                if not quiet:
-                    print(
-                        dim(f"wheelgap: note: {pkg.name} has no earlier release on the index; --dist compares nothing"),
-                        file=sys.stderr,
-                    )
             else:
-                last_version, last_files = latest
-                pkg.found_on_pypi = True
-                multi_py = len({t.python for t in targets}) > 1
-                # As for gaps: an --ignore'd target or package, and an --advisory target, never fail the run.
-                skip = ignore_on.get(pkg.key, set())
-                dropped = {
-                    t.label(multi_py): last_version
-                    for t in dropped_targets(pkg.files or [], last_files, targets)
-                    if pkg.key not in ignore and t.platform not in skip and t not in advisory
-                }
+                if latest is None:
+                    dropped = {}  # a first release: nothing to compare, so nothing can be dropped
+                    if not quiet:
+                        print(
+                            dim(
+                                f"wheelgap: note: {pkg.name} has no earlier release on the index; "
+                                "--dist compares nothing"
+                            ),
+                            file=sys.stderr,
+                        )
+                else:
+                    last_version, last_files = latest
+                    pkg.found_on_pypi = True
+                    multi_py = len({t.python for t in targets}) > 1
+                    # As for gaps: an --ignore'd target or package, and an --advisory target, never fail the run.
+                    skip = ignore_on.get(pkg.key, set())
+                    dropped = {
+                        t.label(multi_py): last_version
+                        for t in dropped_targets(pkg.files or [], last_files, targets)
+                        if pkg.key not in ignore and t.platform not in skip and t not in advisory
+                    }
     code = 0 if args.exit_zero or (not failing and not dropped) else 1
     # The run passes only because --fail-on missing accepts a source build on a required target.
     source_allowed = not failing and not dropped and any(Status.SOURCE in required_statuses(r, advisory) for r in gaps)
