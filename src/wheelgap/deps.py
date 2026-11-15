@@ -241,8 +241,14 @@ class Resolver:
             queue.extend((r, extras[key], tree.paths[key]) for r in requires)
         return tree
 
-    def resolve(self, roots: list[Requirement], target: Target) -> _Tree:
-        learned: dict[str, set[str]] = {}
+    def resolve(
+        self, roots: list[Requirement], target: Target, constraints: dict[str, set[str]] | None = None
+    ) -> _Tree:
+        # A requirements file's -c constraints count as learned specifiers from the start; unlike a constraint the
+        # rounds below learn, a seeded one is never dropped for going unused — it applies while its package is in
+        # the tree, and a package that never installs leaves it harmlessly unimposed.
+        seeded: dict[str, set[str]] = {k: set(specs) for k, specs in (constraints or {}).items()}
+        learned: dict[str, set[str]] = {k: set(specs) for k, specs in seeded.items()}
         seen: set[frozenset[tuple[str, str]]] = set()
         for _ in range(MAX_ROUNDS):
             state = frozenset((k, s) for k, specs in learned.items() for s in specs)
@@ -254,7 +260,12 @@ class Resolver:
                 learned.setdefault(out.key, set()).add(out.spec)
                 continue
             # A learned constraint the finished tree doesn't impose would hold a package back: drop it, go again.
-            unused = {(k, s) for k, specs in learned.items() for s in specs if s not in out.imposed.get(k, set())}
+            unused = {
+                (k, s)
+                for k, specs in learned.items()
+                for s in specs
+                if s not in out.imposed.get(k, set()) and s not in seeded.get(k, set())
+            }
             # A release picked before all its constraints were known may not be the one they pick together (a later
             # `>=2.0b1` lets prereleases in): go again with them all known from the start.
             stale = [
@@ -297,6 +308,14 @@ def _lookup_error(e: Exception) -> str:
     return f"lookup failed ({type(e).__name__})"
 
 
+def pinned_complete(source: Source) -> bool:
+    """A requirements file that's already pip-compile output: every requirement is pinned and the file says so
+    (--hash lines or `# via` comments), so --deps has nothing to resolve."""
+    return source.compiled and all(
+        p.version is not None and not p.spec and not p.error for p in source.packages if not p.skip
+    )
+
+
 def resolve_deps(source: Source, targets: list[Target], resolver: Resolver | None = None) -> None:
     """Replace the source's packages with what its requirements install on each target."""
     resolver = resolver or Resolver()
@@ -307,7 +326,7 @@ def resolve_deps(source: Source, targets: list[Target], resolver: Resolver | Non
     index: dict[tuple[str, str | None, str | None], int] = {}
     deps_paths: dict[Target, dict[int, list[str]]] = {}
     for target in targets:
-        tree = resolver.resolve(roots, target)
+        tree = resolver.resolve(roots, target, constraints=source.constraint_specs)
         reach: dict[int, list[str]] = {}
         for key, path in tree.paths.items():
             version, error = tree.chosen.get(key), tree.errors.get(key)
@@ -323,5 +342,13 @@ def resolve_deps(source: Source, targets: list[Target], resolver: Resolver | Non
                 packages[i].error = error  # its dependencies couldn't be read: unknown, not a clean bill
             reach[i] = path
         deps_paths[target] = reach
+    if source.requirements:
+        if fc := source.format_control:  # --no-binary/--only-binary lines apply to the resolved packages too
+            for p in packages:
+                if not p.skip:
+                    p.no_binary, p.only_binary = fc.policy(p.key)
+        for p in packages:
+            if p.error is None and (error := source.constraint_errors.get(p.key)):
+                p.error = error
     source.packages = packages
     source.deps_paths = deps_paths
