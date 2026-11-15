@@ -153,6 +153,31 @@ The loop stops at the first failing check and exits with its code, so later
 lockfiles aren't checked and a later successful check can't hide an earlier gap
 or input error.
 
+## Will `pip install X` work on my platform?
+
+To check a package's whole dependency tree without installing it, have
+[uv](https://docs.astral.sh/uv/) resolve the tree for every platform, then check the result:
+
+```bash
+echo mcp | uv pip compile --universal -p 3.14 - -o requirements.txt
+wheelgap requirements.txt -p 3.14 -t win-arm64
+```
+
+- `echo mcp |` feeds the requirements to compile on standard input (`-`); name
+  any package or pin, one per line. The `-p 3.14` on both commands is the
+  Python version to resolve and check for.
+- `--universal` keeps the environment markers in the compiled file, so each
+  target gets its own resolved set: a dependency pip installs only on Windows
+  shows `n/a` on the Linux targets instead of a false gap. Without it,
+  `uv pip compile` resolves for the machine it runs on.
+- On 15 November 2026 this finds `cryptography 50.0.2` (`● source`) under
+  `mcp`: `pip install mcp` on Windows on ARM compiles it. Resolved versions
+  change over time, so yours may differ.
+
+For a quick check without writing a file, `wheelgap mcp --deps -p 3.14 -t win-arm64` resolves the tree itself from
+PyPI's metadata (see [`--deps`](cli.md#deps)). It uses wheelgap's own resolver rather than the one pip runs; a
+compiled file like the one above gives the resolution a real resolver picked.
+
 ## Using wheelgap from an agent or script
 
 A coding agent or a script should read wheelgap's exit code and its `--json`
