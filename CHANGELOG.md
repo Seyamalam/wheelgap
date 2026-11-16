@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `--dist` with `offline = true` in `[tool.wheelgap]` now names the real way out — set `offline = false` in `[tool.wheelgap]` (or drop the key) — instead of telling you to pass `--online`, which `--dist` refuses. (#452, thanks [@Seyamalam](https://github.com/Seyamalam))
 - `--deps --github-annotations` on a requirements file puts each annotation back on a line: a direct requirement's gap is on its own line again, and a transitive gap is on the line of the requirement that pulls it in when that's unambiguous, with the message naming what pulls it in (`(via mcp)`), as the table does. More than one puller stays file-only rather than guess a line. (#446, thanks [@Seyamalam](https://github.com/Seyamalam))
 - Python API: `check_lockfile()` takes `deps=True` to check everything a requirements file or `pyproject.toml` installs, resolved per target from PyPI metadata as `--deps` does. Each package in the tree gets a `Result` with `via` and `direct`, `pyproject.toml` (and project directories containing only one) is accepted, and it's refused where `--deps` refuses (lockfiles, `offline=True`, another index). (#445, thanks [@dianatofficial](https://github.com/dianatofficial))
 - MCP `check_lockfile` now accepts `dependencies: true` to check the complete dependency tree of requirements files and `pyproject.toml`, reporting transitive dependency origins and rejecting unsupported inputs rather than silently checking only direct requirements. (#443, thanks [@AdityaSreevatsaK](https://github.com/AdityaSreevatsaK))
