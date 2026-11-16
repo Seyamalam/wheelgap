@@ -764,8 +764,12 @@ def test_check_dist_a_first_release_compares_nothing(fake_pypi, tmp_path):
     assert any("no earlier release" in note for note in data["notes"])
 
 
-def test_check_dist_ok_is_false_when_the_comparison_didnt_run(fake_pypi, tmp_path, monkeypatch):
-    # The index lookup failing must not read as "nothing dropped".
+@pytest.mark.parametrize("force_color", [False, True])
+def test_check_dist_ok_is_false_when_the_comparison_didnt_run(fake_pypi, tmp_path, monkeypatch, force_color):
+    # The index lookup failing must not read as "nothing dropped"; and with FORCE_COLOR set in the server's
+    # environment, the note saying so must still reach notes (a dimmed line wouldn't start "wheelgap: ").
+    if force_color:
+        monkeypatch.setenv("FORCE_COLOR", "1")
     monkeypatch.setattr(mcp.pypi, "fetch_json", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
     folder = dist(tmp_path, LINUX_WHEEL, WIN_ARM_WHEEL, SDIST)
     (_, reply) = run(
@@ -793,6 +797,28 @@ def test_check_dist_reads_the_config_beside_the_dist_folder_not_the_servers(fake
     data = reply["result"]["structuredContent"]
     assert data["dropped"] == {"3.13 win-arm64": "1.0"}
     assert data["advisory"] == []
+    assert data["ok"] is False
+
+
+def test_check_dist_a_dotdot_path_doesnt_reach_the_servers_project(fake_pypi, tmp_path, monkeypatch):
+    # app/../legacy/dist: walking the path's text would pass through app/ and take the server's config.
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "pyproject.toml").write_text('[tool.wheelgap]\nadvisory = ["win-arm64"]\n', encoding="utf-8")
+    monkeypatch.chdir(app)
+    folder = tmp_path / "legacy" / "dist"
+    folder.mkdir(parents=True)
+    for name in (LINUX_WHEEL, SDIST):
+        (folder / name).write_bytes(b"")
+    (_, reply) = run(
+        init(),
+        call(
+            "check_dist", path=str(app / ".." / "legacy" / "dist"), python="3.13", targets=["linux-x86_64", "win-arm64"]
+        ),
+    )
+    data = reply["result"]["structuredContent"]
+    assert data["advisory"] == []
+    assert data["dropped"] == {"3.13 win-arm64": "1.0"}
     assert data["ok"] is False
 
 
@@ -833,7 +859,7 @@ def test_check_dist_a_missing_wheel_is_not_ok(fake_pypi, tmp_path):
     assert data["ok"] is False
 
 
-def test_check_dist_an_ignored_targets_gap_is_ok(fake_pypi, tmp_path, monkeypatch):
+def test_check_dist_an_ignored_targets_gap_is_ok(fake_pypi, tmp_path):
     # Pyodide can't build the sdist (missing), but that target is ignored.
     (tmp_path / "pyproject.toml").write_text('[tool.wheelgap]\nignore = ["distpkg:pyodide"]\n', encoding="utf-8")
     folder = dist(tmp_path, LINUX_WHEEL, SDIST)

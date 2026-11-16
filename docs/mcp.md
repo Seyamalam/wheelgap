@@ -42,13 +42,14 @@ All six are read-only. They look packages up on PyPI, or on the index in
 - `check_dist` (after 0.12.0): the files a release is about to upload — the
   `dist/` folder `uv build` or `python -m build` leaves — as
   `wheelgap --dist DIR --json` reports them: per target, whether a wheel
-  installs or the sdist builds, and `dropped` naming each target the previous
+  installs or only the sdist is there to build from, and `dropped` naming each target the previous
   release on PyPI had a wheel for that this one doesn't. `ok` is false when
   anything was dropped — and when the comparison couldn't run, rather than
   guess, and when any target has no wheel (a source build may need a
   compiler), as in the other tools. `[tool.wheelgap]` settings and
   `.python-version` come from the nearest folder above it with a
-  `pyproject.toml`, not the server's working directory. An agent that cuts releases can gate the upload on it, the way the
+  `pyproject.toml` (else the folder holding it), not the server's working
+  directory. An agent that cuts releases can gate the upload on it, the way the
   [Action's `dist` input](ci.md#before-a-release) does in a workflow.
 - `diff_lockfiles`: takes an `old` and a `new` lockfile (plus `python` and
   `targets`) and answers as `wheelgap diff OLD NEW --json` does, with `ok`

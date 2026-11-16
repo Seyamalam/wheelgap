@@ -320,7 +320,7 @@ TOOLS: list[dict[str, Any]] = [
             ".python-version come from the nearest folder above it with a pyproject.toml (else the folder "
             "holding it), not the server's working directory. 'ok' is true only when every target has a wheel "
             "and nothing was dropped; 'passes' is the command line's verdict, which a gap on an advisory target "
-            "doesn't fail, so it can be true while 'ok' is false. " + _STATUS_HELP
+            "doesn't fail (nor a comparison that didn't run), so it can be true while 'ok' is false. " + _STATUS_HELP
         ),
         "inputSchema": {
             "type": "object",
@@ -666,7 +666,10 @@ def _check_dist(args: dict[str, Any]) -> dict[str, Any]:
     argv += [f"--{key}={value}" for key, value in _versions(args).items()]
     # The project that built it: the nearest folder above with a pyproject.toml (dist/ beside it, or maturin's
     # target/wheels), else the folder holding it. Never the server's working directory, another project's.
-    project = next((d for d in dist.absolute().parents if (d / "pyproject.toml").is_file()), dist.absolute().parent)
+    # abspath collapses ".." (Path.parents works on the text: app/../legacy/dist would pass through app/) and keeps
+    # symlinks as given.
+    here = Path(os.path.abspath(dist))
+    project = next((d for d in here.parents if (d / "pyproject.toml").is_file()), here.parent)
     out = _run_cli(argv, dist, positional=False, project=project)
     # As in the other tools, ok means no gap at all (a source build needs a compiler; wheelgap doesn't check it
     # builds), and also that the comparison ran and dropped nothing: absent 'dropped' is never read as {}.

@@ -1515,7 +1515,7 @@ def version_suggestions(
 
 def main(argv: list[str] | None = None, *, project: Path | None = None) -> int:
     """The command line. `project`: the folder whose pyproject.toml and .python-version apply when no input names one
-    (the MCP server's check_dist passes the folder holding the dist folder, not the server's working directory)."""
+    (the MCP server's check_dist passes the dist folder's project, not the server's working directory)."""
     for stream in (sys.stdout, sys.stderr):
         # Don't crash printing ✓ to a non-UTF-8 pipe (e.g. Windows cp1252).
         reconfigure = getattr(stream, "reconfigure", None)
