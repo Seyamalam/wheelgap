@@ -339,15 +339,19 @@ def annotation(
     # --deps: a package the resolved tree pulls in has no line of its own; the direct requirement that pulls it
     # in does, when exactly one leads to it on every gap target. Name it in the message either way.
     direct: dict[str, str] = {}
-    if locator.deps_resolved(pkg):
-        for t in targets:
-            if t not in row.ignored and row.results[t] in GAP_WORDS:
-                for n in row.direct_via.get(t, ()):
-                    direct.setdefault(canonicalize_name(n), n)
+    gap_targets = [t for t in targets if t not in row.ignored and row.results[t] in GAP_WORDS]
+    deps_resolved = locator.deps_resolved(pkg)
+    # Under --deps, a package is one of the file's own requirements on a target when its path there is just its
+    # name; otherwise the tree pulls it in. Mixed, or unknown (no path), means no line can be trusted.
+    rooted = [len(row.via.get(t, ())) == 1 for t in gap_targets]
+    if deps_resolved:
+        for t in gap_targets:
+            for n in row.direct_via.get(t, ()):
+                direct.setdefault(canonicalize_name(n), n)
     names = list(direct.values())
     message = f"{name} {'; '.join(parts)}"
     if names:
-        message += f" (via {', '.join(names)})"
+        message += f" (via {', '.join(names)}{'' if not any(rooted) else ' on some targets'})"
     message += "."
     if pkg.error:
         message += f" Lookup error: {pkg.error}."
@@ -358,10 +362,14 @@ def annotation(
         else:
             message += " Gaps on advisory targets don't fail the run."
     location = locator.locate(pkg)
-    # One requirement pulls it in on every gap target: put the annotation on that requirement's line. More
-    # than one, or an uncertain line, stays file-only — a wrong line is worse than none.
-    if len(names) == 1 and (via := locator.locate_via(pkg, names[0])) is not None:
-        location = via
+    if deps_resolved and location is not None and not (gap_targets and all(rooted)):
+        # Not the file's own requirement on every gap target, so its own line (if it has one, say with a marker
+        # that excludes these targets) isn't where it comes from. Exactly one requirement pulling it in on every
+        # gap target gives that requirement's line; more than one, a mix, or an uncertain line stays file-only —
+        # a wrong line is worse than none.
+        transitive = not any(rooted) and all(row.direct_via.get(t) for t in gap_targets)
+        via = locator.locate_via(pkg, names[0]) if transitive and len(names) == 1 else None
+        location = via if via is not None else (location[0], None)
     file = line = None
     if location is not None:
         file = relative_path(location[0])

@@ -2761,7 +2761,8 @@ def test_github_annotations_requirements(capsys, fake_pypi, tmp_path, monkeypatc
 
 def test_github_annotations_deps_keeps_a_direct_requirements_line(index, capsys, tmp_path, monkeypatch):  # noqa: F811
     # --deps checks the resolved tree, but a direct requirement's gap is still on its own line (#432).
-    (tmp_path / "requirements.txt").write_text("crypt==1.0\n", encoding="utf-8")
+    # app pulls in more than the file names (and crypt again, through lib[crypto]): crypt is still its own line's.
+    (tmp_path / "requirements.txt").write_text("crypt==1.0\napp==1.0\n", encoding="utf-8")
     monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
     code, out, _ = run(
         capsys,
@@ -2774,10 +2775,46 @@ def test_github_annotations_deps_keeps_a_direct_requirements_line(index, capsys,
         "--github-annotations",
     )
     assert code == 1
-    assert annotation_lines(out) == [
+    assert (
         "::error file=requirements.txt,line=1,title=crypt 1.0%3A builds from source::"
         "crypt 1.0 builds from source on win-arm64."
-    ]
+    ) in annotation_lines(out)
+
+
+def test_github_annotations_deps_a_marked_requirement_keeps_its_line(index, capsys, tmp_path, monkeypatch):  # noqa: F811
+    (tmp_path / "requirements.txt").write_text('crypt==1.0; sys_platform == "win32"\napp==1.0\n', encoding="utf-8")
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    _, out, _ = run(
+        capsys, str(tmp_path / "requirements.txt"), "--deps", "-p", "3.14", "-t", "win-arm64", "--github-annotations"
+    )
+    (line,) = [ln for ln in annotation_lines(out) if "title=crypt" in ln]
+    assert line.startswith("::error file=requirements.txt,line=1,")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # crypt's own line is Linux-only: on Windows parenta and parentb pull it in, so that line is the wrong one.
+        'crypt==1.0; sys_platform == "linux"\nparenta==1.0\nparentb==1.0\n',
+        # One puller, but on two lines: neither is certain, and crypt's Linux-only line is still the wrong one.
+        'crypt==1.0; sys_platform == "linux"\n'
+        'parenta==1.0; python_version >= "3"\nparenta==1.0; python_version < "3"\n',
+    ],
+)
+def test_github_annotations_deps_never_uses_a_line_that_isnt_where_it_comes_from(
+    index,  # noqa: F811  (the index fixture)
+    capsys,
+    tmp_path,
+    monkeypatch,
+    text,
+):
+    (tmp_path / "requirements.txt").write_text(text, encoding="utf-8")
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    _, out, _ = run(
+        capsys, str(tmp_path / "requirements.txt"), "--deps", "-p", "3.14", "-t", "win-arm64", "--github-annotations"
+    )
+    (line,) = [ln for ln in annotation_lines(out) if "title=crypt" in ln]
+    assert line.startswith("::error file=requirements.txt,title=crypt 1.0%3A builds from source::")
 
 
 def test_github_annotations_deps_a_transitive_gap_names_its_requirement(index, capsys, tmp_path, monkeypatch):  # noqa: F811
