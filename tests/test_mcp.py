@@ -779,6 +779,55 @@ def test_check_dist_ok_is_false_when_the_comparison_didnt_run(fake_pypi, tmp_pat
     assert any("dropped-target check didn't run" in note for note in data["notes"])
 
 
+def test_check_dist_reads_the_config_beside_the_dist_folder_not_the_servers(fake_pypi, tmp_path, monkeypatch):
+    # The server runs in another project whose config makes win-arm64 advisory: that must not hide this drop.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "pyproject.toml").write_text('[tool.wheelgap]\nadvisory = ["win-arm64"]\n', encoding="utf-8")
+    monkeypatch.chdir(elsewhere)
+    folder = dist(tmp_path, LINUX_WHEEL, SDIST)  # no win_arm64 wheel this time
+    (_, reply) = run(
+        init(),
+        call("check_dist", path=str(folder), python="3.13", targets=["linux-x86_64", "win-arm64"]),
+    )
+    data = reply["result"]["structuredContent"]
+    assert data["dropped"] == {"3.13 win-arm64": "1.0"}
+    assert data["advisory"] == []
+    assert data["ok"] is False
+
+
+def test_check_dist_applies_its_own_projects_config(fake_pypi, tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.wheelgap]\npython = ["3.13"]\ntargets = ["linux-x86_64", "win-arm64"]\nadvisory = ["win-arm64"]\n',
+        encoding="utf-8",
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    folder = dist(tmp_path, LINUX_WHEEL, SDIST)
+    (_, reply) = run(init(), call("check_dist", path=str(folder)))
+    data = reply["result"]["structuredContent"]
+    assert data["targets"] == ["3.13 linux-x86_64", "3.13 win-arm64"]
+    assert data["dropped"] == {}  # an advisory target is never a drop
+    assert data["ok"] is True
+
+
+def test_check_dist_ok_ignores_an_ignored_targets_gap(fake_pypi, tmp_path, monkeypatch):
+    # Pyodide can't build the sdist (missing), but that target is ignored; macOS builds it (source), which ok allows.
+    (tmp_path / "pyproject.toml").write_text('[tool.wheelgap]\nignore = ["distpkg:pyodide"]\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    folder = dist(tmp_path, LINUX_WHEEL, SDIST)
+    (_, reply) = run(
+        init(),
+        call("check_dist", path=str(folder), python="3.13", targets=["linux-x86_64", "macos-arm64", "pyodide"]),
+    )
+    data = reply["result"]["structuredContent"]
+    assert data["gaps"][0]["results"]["3.13 pyodide"] == "missing"
+    assert data["gaps"][0]["gaps"] == ["3.13 macos-arm64"]
+    assert data["dropped"] == {}
+    assert data["ok"] is True
+
+
 def test_check_dist_takes_a_file_uri(fake_pypi, tmp_path):
     folder = dist(tmp_path, LINUX_WHEEL, WIN_ARM_WHEEL, SDIST)
     (_, reply) = run(

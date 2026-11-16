@@ -315,8 +315,10 @@ TOOLS: list[dict[str, Any]] = [
             "folder: 'dropped' maps each target that release had an installable wheel for but this one doesn't "
             "to that release's version. A first release compares as 'dropped': {}. When the comparison couldn't "
             "run — the index lookup failed, or an index variable is set, which may name another project of the "
-            "same name — 'dropped' is absent and 'ok' is false rather than a guess. 'ok' is true only when every "
-            "target installs — a wheel, or the sdist builds — and nothing was dropped; 'passes' is the command "
+            "same name — 'dropped' is absent and 'ok' is false rather than a guess. [tool.wheelgap] settings and "
+            ".python-version come from the folder holding the dist folder, as a lockfile's come from its own. "
+            "'ok' is true only when every target installs — a wheel, or the sdist builds — and nothing was "
+            "dropped; 'passes' is the command "
             "line's verdict, which also fails on source-build and missing gaps as the release gate does. "
             + _STATUS_HELP
         ),
@@ -662,8 +664,9 @@ def _check_dist(args: dict[str, Any]) -> dict[str, Any]:
         out["ok"] = False  # the previous-release comparison couldn't run: say so rather than guess
     else:
         # "Every target installs": a wheel, or the sdist builds; missing and unknown say it doesn't.
+        # Only the gap cells count: an --ignore'd target's missing wheel doesn't fail it, as in the other tools.
         out["ok"] = not out["dropped"] and not any(
-            status in _GAP - {Status.SOURCE.value} for gap in out["gaps"] for status in gap["results"].values()
+            gap["results"][cell] in _GAP - {Status.SOURCE.value} for gap in out["gaps"] for cell in gap["gaps"]
         )
     return out
 
@@ -751,14 +754,15 @@ def _clip(text: str, limit: int = 200) -> str:
 
 def _run_cli(argv: list[str], path: Path, *, positional: bool = True) -> dict[str, Any]:
     """`wheelgap ARGV -- PATH` with --json in ARGV: its result as the lockfile tools return it. positional=False
-    runs `wheelgap ARGV` with no input at all (check_dist: --dist takes none) and keeps PATH in the result."""
+    runs `wheelgap ARGV` with no input at all (check_dist: --dist takes none) and keeps PATH in the result; the
+    settings then come from the folder holding PATH, never the server's working directory (another project's)."""
     from . import cli
 
     argv = [*argv, "--", str(path)] if positional else argv
     out, err = io.StringIO(), io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main(argv)
+            code = cli.main(argv) if positional else cli.main(argv, project=path.resolve().parent)
     except SystemExit as e:  # argparse rejected a value
         code = e.code if isinstance(e.code, int) else 2
     messages = [line.removeprefix("wheelgap: ") for line in err.getvalue().splitlines() if line.strip()]

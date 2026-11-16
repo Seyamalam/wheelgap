@@ -1513,7 +1513,9 @@ def version_suggestions(
     }
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, project: Path | None = None) -> int:
+    """The command line. `project`: the folder whose pyproject.toml and .python-version apply when no input names one
+    (the MCP server's check_dist passes the folder holding the dist folder, not the server's working directory)."""
     for stream in (sys.stdout, sys.stderr):
         # Don't crash printing ✓ to a non-UTF-8 pipe (e.g. Windows cp1252).
         reconfigure = getattr(stream, "reconfigure", None)
@@ -1536,10 +1538,10 @@ def main(argv: list[str] | None = None) -> int:
         return mcp_main(argv[1:], prog="wheelgap mcp")
     # Lockfile text must never run as a GitHub Actions workflow command in a CI log (see logsafe).
     with guarded_output():
-        return _main(argv)
+        return _main(argv, project)
 
 
-def _main(argv: list[str]) -> int:
+def _main(argv: list[str], project: Path | None = None) -> int:
     # `wheelgap diff OLD NEW`: a subcommand only when "diff" comes first and isn't a file or folder here, so
     # `wheelgap ./diff` still checks a folder named diff (and `wheelgap diff==1.0` the PyPI package).
     if argv[:1] == ["diff"]:
@@ -1641,10 +1643,10 @@ def _main(argv: list[str]) -> int:
             if not args.inputs and not args.list_targets:
                 return 0
         if args.list_targets:
-            pyproject = find_pyproject(args.inputs)
+            pyproject = find_pyproject(args.inputs or ([str(project)] if project else []))
             print_target_list(args, load_config(pyproject) if pyproject else {})
             return 0
-        pyproject = find_pyproject(args.inputs)
+        pyproject = find_pyproject(args.inputs or ([str(project)] if project else []))
         config = load_config(pyproject) if pyproject else {}
         # quiet = true is a project default, so --from-log (which explains each package) on the command line wins over
         # it, as --no-quiet does; --quiet on the command line still applies.
@@ -1681,7 +1683,10 @@ def _main(argv: list[str]) -> int:
             config.update({k: v for k, v in (("glibc", image.glibc), ("musl", image.musl)) if v})
         glibc_version, musl_version = libc_versions(args, config)
         pythons = (
-            args.python or config.get("python") or read_python_version(project_dir(args.inputs)) or [running_python()]
+            args.python
+            or config.get("python")
+            or read_python_version(project_dir(args.inputs or ([str(project)] if project else [])))
+            or [running_python()]
         )
         platforms = args.target or config.get("targets", [])
         if not platforms and pyproject:

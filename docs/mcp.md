@@ -45,7 +45,8 @@ All six are read-only. They look packages up on PyPI, or on the index in
   installs or the sdist builds, and `dropped` naming each target the previous
   release on PyPI had a wheel for that this one doesn't. `ok` is false when
   anything was dropped — and when the comparison couldn't run, rather than
-  guess. An agent that cuts releases can gate the upload on it, the way the
+  guess. `[tool.wheelgap]` settings and `.python-version` come from the
+  folder holding the `dist/` folder, not the server's working directory. An agent that cuts releases can gate the upload on it, the way the
   [Action's `dist` input](ci.md#before-a-release) does in a workflow.
 - `diff_lockfiles`: takes an `old` and a `new` lockfile (plus `python` and
   `targets`) and answers as `wheelgap diff OLD NEW --json` does, with `ok`
