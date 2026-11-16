@@ -303,14 +303,18 @@ reason (such as `abi3 wheels can't be used on free-threaded Python (only
 abi3t ones can)`), and `rejected_omitted` counting any it left out. Without
 `explain`, the result has only the statuses, which keeps it small.
 
-When a package has gaps, `check_package` also returns `last_with_wheel`, as
-`wheelgap --explain --suggest --json` does: for each gap target that no newer
-release has a wheel for, the newest older release that has one (of the 50
-newest before the one checked), such as `{"3.13 win-arm64": "46.0.3"}`, so an
-agent can answer "pin cryptography to 46.0.3 or earlier". It reads the
+When a package has gaps, `check_package` also returns `suggest` and
+`last_with_wheel`, as `wheelgap --explain --suggest --json` does: for each gap
+target some newer release has a wheel for, `suggest` names that release, such
+as `{"3.13 win-arm64": "46.0.4"}`, so an agent can answer "move to
+cryptography 46.0.4"; and for each gap target no newer release has a wheel
+for, `last_with_wheel` names the newest older release that has one (of the 50
+newest before the one checked), such as `{"3.13 win-arm64": "46.0.3"}`, so it
+can answer "pin cryptography to 46.0.3 or earlier". It reads the
 project's release list from PyPI, which is one more request, and is left out
 when there's no gap, when `WHEELGAP_INDEX_URL` points at another index (which
-may hold private names), or when that lookup fails.
+may hold private names), or when that lookup fails. (`suggest` is there after
+0.12.0; before it, only `last_with_wheel` is.)
 
 To check what a package installs as well as the package itself, as [`--deps`](cli.md#deps) does, pass
 `dependencies: true`:
@@ -321,7 +325,9 @@ The tree is resolved for each target from PyPI's metadata, and the result adds
 `dependencies_checked` (how many other packages were checked) and
 `dependency_gaps`: each package in the tree with a gap, with its `results`,
 `gaps` and `via`, the path to it on each gap target, such as
-`{"3.13 win-arm64": ["mcp", "PyJWT", "cryptography"]}`. The other fields stay
+`{"3.13 win-arm64": ["mcp", "PyJWT", "cryptography"]}`, and (after 0.12.0) its
+own `suggest` and `last_with_wheel` from one batched lookup for the whole
+tree. The other fields stay
 those of the package asked about, except `ok`, which is then true only if
 nothing in the tree has a gap. A tree that only a backtracking resolver could
 settle is an error, as it is on the command line.
