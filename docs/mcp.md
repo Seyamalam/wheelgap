@@ -29,7 +29,12 @@ All six are read-only. They look packages up on PyPI, or on the index in
 - `check_lockfile`: the same answer as `wheelgap PATH --json`, `[tool.wheelgap]`
   settings included: the packages with gaps, the ones it skipped (git, path and
   private-index packages, which aren't checked) and any notes. It also returns
-  `blocking_newer_python` when two Pythons, one newer, are checked.
+  `blocking_newer_python` when two Pythons, one newer, are checked. With
+  `dependencies: true` (after 0.12.0), requirements files and `pyproject.toml`
+  are resolved as `--deps` would, including transitive gaps, each with `via`
+  (the path to it on each gap target) and `direct` (the direct dependencies
+  behind it). It's refused where `--deps` is: lockfiles, offline, and another
+  index.
 - `check_dockerfile`: the answer of
   `wheelgap PATH --dockerfile DOCKERFILE --json` (`PATH` defaults to the
   Dockerfile's folder), plus the `image` it read (`python`, `platform`,
@@ -58,6 +63,12 @@ All six are read-only. They look packages up on PyPI, or on the index in
   (`mkdir -p /tmp/old && git show HEAD:uv.lock > /tmp/old/uv.lock`) and ask
   whether the upgrade lost a wheel.
 - `list_targets`: the platform names the other tools accept.
+
+For example (after 0.12.0), to check everything `requirements.txt` installs, call
+`check_lockfile` with `{"path": "requirements.txt", "python": "3.13",
+"targets": ["win-arm64"], "dependencies": true}`. The `dependencies` argument
+is a boolean, defaults to `false`, and follows the command line's `--deps`
+validation and error rules.
 
 On `pyodide` targets, `check_package` and `check_lockfile` take an optional
 `pyodide_lock` (a path or https URL of a `pyodide-lock.json`, as
@@ -117,6 +128,7 @@ for `check_dist` the nearest folder above the dist folder with a
 | `macos` | string | `[tool.wheelgap] macos`, else `14.0` | Oldest macOS version to support. |
 | `pyodide_lock` | string | `[tool.wheelgap] pyodide-lock` (when a pyodide target is checked) | Absolute path or https URL of a Pyodide release's `pyodide-lock.json`. |
 | `offline` | boolean | `[tool.wheelgap] offline`, else `false` | Use only the files recorded in the lockfile; never contact the index. `true` turns it on; `offline = true` in the project can't be turned off from here. |
+| `dependencies` | boolean | `false` | (after 0.12.0) Resolve transitive dependencies of requirements files and `pyproject.toml` with `--deps`; each gap gets `via` and `direct`. Refused for lockfiles, offline and another index. |
 
 #### `check_dockerfile`
 
