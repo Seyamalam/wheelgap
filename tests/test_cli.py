@@ -2791,6 +2791,28 @@ def test_github_annotations_deps_a_marked_requirement_keeps_its_line(index, caps
     assert line.startswith("::error file=requirements.txt,line=1,")
 
 
+def test_github_annotations_deps_direct_on_one_python_pulled_in_on_another(index, capsys, tmp_path, monkeypatch):  # noqa: F811
+    # crypt is the file's own requirement on 3.14 but comes through parenta on 3.13: neither line is right for
+    # both, so the annotation names the file only, and says the via applies to some targets.
+    (tmp_path / "requirements.txt").write_text('crypt==1.0; python_version >= "3.14"\nparenta==1.0\n', encoding="utf-8")
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    _, out, _ = run(
+        capsys,
+        str(tmp_path / "requirements.txt"),
+        "--deps",
+        "-p",
+        "3.13",
+        "-p",
+        "3.14",
+        "-t",
+        "win-arm64",
+        "--github-annotations",
+    )
+    (line,) = [ln for ln in annotation_lines(out) if "title=crypt" in ln]
+    assert line.startswith("::error file=requirements.txt,title=crypt 1.0%3A builds from source::")
+    assert "(via parenta on some targets)." in line
+
+
 @pytest.mark.parametrize(
     "text",
     [
