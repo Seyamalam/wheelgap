@@ -18,6 +18,8 @@ Tools (all read-only; they look packages up on PyPI, or the index in WHEELGAP_IN
 - check_package: one package (latest release or a given version) on each target.
 - check_lockfile: what `wheelgap PATH --json` reports, so project config, notes and skipped packages match the CLI.
 - check_dockerfile: what `wheelgap PATH --dockerfile DOCKERFILE --json` reports, plus the image it read.
+- check_dist: what `wheelgap --dist DIR --json` reports for the release about to be uploaded, plus the targets
+  the previous release on PyPI had a wheel for that this one drops.
 - diff_lockfiles: what `wheelgap diff OLD NEW --json` reports (the packages that got worse, and new ones with gaps).
 - list_targets: the platform names the other tools accept.
 
@@ -303,6 +305,40 @@ TOOLS: list[dict[str, Any]] = [
         "annotations": _READ_ONLY,
     },
     {
+        "name": "check_dist",
+        "title": "Check a release's files before upload",
+        "description": (
+            "Check the wheels and sdist about to be uploaded — the dist/ folder `uv build` or `python -m build` "
+            "leaves — as `wheelgap --dist DIR --json` does: per target, whether a wheel installs or the sdist "
+            "builds, with the name and version taken from the filenames (a folder mixing projects or versions is "
+            "an error). The files are also compared with the newest release on PyPI older than the one in the "
+            "folder: 'dropped' maps each target that release had an installable wheel for but this one doesn't "
+            "to that release's version. A first release compares as 'dropped': {}. When the comparison couldn't "
+            "run — the index lookup failed, or an index variable is set, which may name another project of the "
+            "same name — 'dropped' is absent and 'ok' is false rather than a guess. 'ok' is true only when every "
+            "target installs — a wheel, or the sdist builds — and nothing was dropped; 'passes' is the command "
+            "line's verdict, which also fails on source-build and missing gaps as the release gate does. "
+            + _STATUS_HELP
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path or file:// URI of the folder of built files (a relative "
+                    "path is looked for in the client's roots if it shares them, else in the server's working "
+                    "directory).",
+                },
+                "python": _PYTHON_PROP | {"description": _PYTHON_PROP["description"] + " Default: the server's."},
+                "targets": _TARGETS_PROP,
+                **_VERSION_PROPS,
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "annotations": _READ_ONLY,
+    },
+    {
         "name": "diff_lockfiles",
         "title": "Compare two lockfiles",
         "description": (
@@ -338,8 +374,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_targets",
         "title": "List target platforms",
-        "description": "List the platform names and groups that check_package, check_lockfile, check_dockerfile and "
-        "diff_lockfiles accept.",
+        "description": "List the platform names and groups that check_package, check_lockfile, check_dockerfile, "
+        "check_dist and diff_lockfiles accept.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         "annotations": _READ_ONLY | {"openWorldHint": False},
     },
@@ -611,6 +647,27 @@ def _file_uri_path(uri: str) -> Path | None:
     return None
 
 
+def _check_dist(args: dict[str, Any]) -> dict[str, Any]:
+    """`wheelgap --dist DIR --json`, the release gate for the files about to be uploaded."""
+    _check_keys("check_dist", args)
+    dist = _existing(_string(args, "path", required=True) or "")
+    if not dist.is_dir():
+        raise ToolError(f"{args['path']}: is not a folder (pass the folder of built files)")
+    argv = ["--json", f"--dist={dist}"]
+    argv += [f"--python={p}" for p in _pythons(args)]
+    argv += [f"--target={p}" for p in _platforms(args)]
+    argv += [f"--{key}={value}" for key, value in _versions(args).items()]
+    out = _run_cli(argv, dist, positional=False)
+    if "dropped" not in out:
+        out["ok"] = False  # the previous-release comparison couldn't run: say so rather than guess
+    else:
+        # "Every target installs": a wheel, or the sdist builds; missing and unknown say it doesn't.
+        out["ok"] = not out["dropped"] and not any(
+            status in _GAP - {Status.SOURCE.value} for gap in out["gaps"] for status in gap["results"].values()
+        )
+    return out
+
+
 def _diff_lockfiles(args: dict[str, Any]) -> dict[str, Any]:
     """`wheelgap diff OLD NEW --json`, through diff.py's functions rather than its main(), plus ok."""
     from . import diff
@@ -692,11 +749,12 @@ def _clip(text: str, limit: int = 200) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
-def _run_cli(argv: list[str], path: Path) -> dict[str, Any]:
-    """`wheelgap ARGV -- PATH` with --json in ARGV: its result as the lockfile tools return it."""
+def _run_cli(argv: list[str], path: Path, *, positional: bool = True) -> dict[str, Any]:
+    """`wheelgap ARGV -- PATH` with --json in ARGV: its result as the lockfile tools return it. positional=False
+    runs `wheelgap ARGV` with no input at all (check_dist: --dist takes none) and keeps PATH in the result."""
     from . import cli
 
-    argv = [*argv, "--", str(path)]
+    argv = [*argv, "--", str(path)] if positional else argv
     out, err = io.StringIO(), io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -737,7 +795,7 @@ def _run_cli(argv: list[str], path: Path) -> dict[str, Any]:
     if data["skipped"]:
         n = len(data["skipped"])
         notes.append(f"{n} package{'s' if n != 1 else ''} weren't checked (see skipped); ok covers the others only")
-    return {
+    result = {
         "path": str(path.resolve()),
         "targets": list(label.values()),
         "packages": data["summary"]["packages"],
@@ -756,6 +814,10 @@ def _run_cli(argv: list[str], path: Path) -> dict[str, Any]:
         "ignored_targets": data["ignored_targets"],
         "notes": notes,
     } | ({"blocking_newer_python": data["blocking_newer_python"]} if "blocking_newer_python" in data else {})
+    # --dist: targets the previous release had a wheel for that this one drops, labelled like results.
+    if "dropped" in data:
+        result["dropped"] = {label[k]: v for k, v in data["dropped"].items()}
+    return result
 
 
 def _list_targets(args: dict[str, Any]) -> dict[str, Any]:
@@ -774,6 +836,7 @@ _HANDLERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "check_package": _check_package,
     "check_lockfile": _check_lockfile,
     "check_dockerfile": _check_dockerfile,
+    "check_dist": _check_dist,
     "diff_lockfiles": _diff_lockfiles,
     "list_targets": _list_targets,
 }
@@ -1159,6 +1222,7 @@ _PATH_ARGUMENTS = {
     "check_package": ("pyodide_lock",),
     "check_lockfile": ("path", "pyodide_lock"),
     "check_dockerfile": ("dockerfile", "path"),
+    "check_dist": ("path",),
     "diff_lockfiles": ("old", "new"),
 }
 

@@ -1,8 +1,8 @@
 # Set up wheelgap-mcp in your agent
 
 `wheelgap-mcp` is wheelgap's [MCP](https://modelcontextprotocol.io/) server. It
-runs over stdio and gives an agent five read-only tools: `check_package`,
-`check_lockfile`, `check_dockerfile`, `diff_lockfiles` and `list_targets`. Every
+runs over stdio and gives an agent six read-only tools: `check_package`,
+`check_lockfile`, `check_dockerfile`, `check_dist` (after 0.12.0), `diff_lockfiles` and `list_targets`. Every
 client below starts it with the same command:
 
 ```bash
@@ -19,7 +19,7 @@ too.
 
 ## Tools
 
-All five are read-only. They look packages up on PyPI, or on the index in
+All six are read-only. They look packages up on PyPI, or on the index in
 `WHEELGAP_INDEX_URL`, and like wheelgap the server needs nothing beyond
 `packaging`.
 
@@ -39,6 +39,14 @@ All five are read-only. They look packages up on PyPI, or on the index in
   Docker build overrides them with `--build-arg`, pass the same values as the
   `build_args` argument, as `--build-arg` does on the
   command line. A Dockerfile wheelgap can't read is a tool error.
+- `check_dist` (after 0.12.0): the files a release is about to upload — the
+  `dist/` folder `uv build` or `python -m build` leaves — as
+  `wheelgap --dist DIR --json` reports them: per target, whether a wheel
+  installs or the sdist builds, and `dropped` naming each target the previous
+  release on PyPI had a wheel for that this one doesn't. `ok` is false when
+  anything was dropped — and when the comparison couldn't run, rather than
+  guess. An agent that cuts releases can gate the upload on it, the way the
+  [Action's `dist` input](ci.md#before-a-release) does in a workflow.
 - `diff_lockfiles`: takes an `old` and a `new` lockfile (plus `python` and
   `targets`) and answers as `wheelgap diff OLD NEW --json` does, with `ok`
   added: the packages that got worse on a target and the new ones with gaps. An
@@ -56,7 +64,7 @@ On `pyodide` targets, `check_package` and `check_lockfile` take an optional
 `"environment": "test"` to check the `test` environment instead of `default`.
 An unknown environment is a tool error listing the lockfile's environment names.
 
-Pass `check_lockfile`, `check_dockerfile` and `diff_lockfiles` an absolute path
+Pass `check_lockfile`, `check_dockerfile`, `check_dist` and `diff_lockfiles` an absolute path
 or a `file://` URI, since the server's working directory may not be your
 project. If the client shares its
 [roots](https://modelcontextprotocol.io/specification/2025-06-18/client/roots),

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from conftest import FAKE_INDEX
 from test_deps import index  # noqa: F401  (the fake PyPI --deps resolves against)
+from test_dist import LINUX_WHEEL, SDIST, WIN_ARM_WHEEL, dist
 
 from wheelgap import __version__, mcp
 
@@ -93,7 +94,14 @@ def test_batches_reply_with_a_list():
 def test_tools_list_has_valid_schemas():
     (_, reply) = run(init(), {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
     tools = {t["name"]: t for t in reply["result"]["tools"]}
-    assert set(tools) == {"check_package", "check_lockfile", "check_dockerfile", "diff_lockfiles", "list_targets"}
+    assert set(tools) == {
+        "check_package",
+        "check_lockfile",
+        "check_dockerfile",
+        "check_dist",
+        "diff_lockfiles",
+        "list_targets",
+    }
     for tool in tools.values():
         assert tool["inputSchema"]["type"] == "object"
         assert tool["annotations"]["readOnlyHint"] is True
@@ -719,6 +727,95 @@ def test_check_dockerfile_directory_is_a_tool_error(fake_pypi, tmp_path, fixture
     (_, reply) = run(init(), call("check_dockerfile", dockerfile=str(tmp_path)))
     assert reply["result"]["isError"] is True
     assert "is a directory" in reply["result"]["content"][0]["text"]
+
+
+def test_check_dist_names_each_dropped_target(fake_pypi, tmp_path):
+    folder = dist(tmp_path, LINUX_WHEEL, SDIST)  # no win_arm64 wheel this time
+    (_, reply) = run(
+        init(),
+        call("check_dist", path=str(folder), python="3.13", targets=["linux-x86_64", "win-arm64"]),
+    )
+    result = reply["result"]
+    data = result["structuredContent"]
+    assert result["isError"] is False
+    assert data["dropped"] == {"3.13 win-arm64": "1.0"}
+    assert data["gaps"][0]["results"] == {"3.13 linux-x86_64": "wheel", "3.13 win-arm64": "source"}
+    assert data["ok"] is False and data["passes"] is False
+    assert data["path"] == str(folder.resolve())
+
+
+def test_check_dist_a_clean_release_passes(fake_pypi, tmp_path):
+    folder = dist(tmp_path, LINUX_WHEEL, WIN_ARM_WHEEL, SDIST)
+    (_, reply) = run(
+        init(),
+        call("check_dist", path=str(folder), python="3.13", targets=["linux-x86_64", "win-arm64"]),
+    )
+    data = reply["result"]["structuredContent"]
+    assert data["dropped"] == {} and data["gaps"] == []
+    assert data["ok"] is True and data["passes"] is True
+
+
+def test_check_dist_a_first_release_compares_nothing(fake_pypi, tmp_path):
+    folder = dist(tmp_path, "firstpkg-1.0-cp313-cp313-manylinux_2_17_x86_64.whl")
+    (_, reply) = run(init(), call("check_dist", path=str(folder), python="3.13", targets=["linux-x86_64"]))
+    data = reply["result"]["structuredContent"]
+    assert data["dropped"] == {}
+    assert data["ok"] is True
+    assert any("no earlier release" in note for note in data["notes"])
+
+
+def test_check_dist_ok_is_false_when_the_comparison_didnt_run(fake_pypi, tmp_path, monkeypatch):
+    # The index lookup failing must not read as "nothing dropped".
+    monkeypatch.setattr(mcp.pypi, "fetch_json", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    folder = dist(tmp_path, LINUX_WHEEL, WIN_ARM_WHEEL, SDIST)
+    (_, reply) = run(
+        init(),
+        call("check_dist", path=str(folder), python="3.13", targets=["linux-x86_64", "win-arm64"]),
+    )
+    data = reply["result"]["structuredContent"]
+    assert "dropped" not in data
+    assert data["ok"] is False  # not a guess
+    assert data["passes"] is True  # the gate itself passed; only the comparison didn't run
+    assert any("dropped-target check didn't run" in note for note in data["notes"])
+
+
+def test_check_dist_takes_a_file_uri(fake_pypi, tmp_path):
+    folder = dist(tmp_path, LINUX_WHEEL, WIN_ARM_WHEEL, SDIST)
+    (_, reply) = run(
+        init(),
+        call("check_dist", path=folder.resolve().as_uri(), python="3.13", targets=["linux-x86_64"]),
+    )
+    assert reply["result"]["isError"] is False
+    assert reply["result"]["structuredContent"]["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("path", "message"),
+    [
+        ("missing", "no such file or directory"),
+        ("file", "is not a folder"),
+    ],
+)
+def test_check_dist_path_errors(fake_pypi, tmp_path, path, message):
+    if path == "file":
+        (tmp_path / "file").write_text("x", encoding="utf-8")
+    (_, reply) = run(init(), call("check_dist", path=str(tmp_path / path)))
+    assert reply["result"]["isError"] is True
+    assert message in reply["result"]["content"][0]["text"]
+
+
+def test_check_dist_a_mixed_folder_is_a_tool_error(fake_pypi, tmp_path):
+    folder = dist(tmp_path, "a-1.0-py3-none-any.whl", "b-1.0-py3-none-any.whl")
+    (_, reply) = run(init(), call("check_dist", path=str(folder)))
+    assert reply["result"]["isError"] is True
+    assert "more than one project" in reply["result"]["content"][0]["text"]
+
+
+def test_check_dist_rejects_unknown_arguments(fake_pypi, tmp_path):
+    folder = dist(tmp_path, LINUX_WHEEL, SDIST)
+    (_, reply) = run(init(), call("check_dist", path=str(folder), platform=["linux"]))
+    assert reply["result"]["isError"] is True
+    assert "unknown argument(s): platform" in reply["result"]["content"][0]["text"]
 
 
 def test_check_package_pyodide_lock_marks_bundled(fake_pypi, fixtures):
