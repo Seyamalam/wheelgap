@@ -72,7 +72,7 @@ runs:
         fail() { echo "::error::wheelgap: $1"; exit 2; }
         dist=$WHEELGAP_DIST
         case "$dist" in
-          -* | /*) fail "dist must be a folder in the checkout, such as dist" ;;
+          -* | /* | .. | ../* | */.. | */../*) fail "dist must be a folder in the checkout, such as dist" ;;
         esac
         if [ -n "$dist" ] && [ ! -d "$dist" ]; then
           fail "dist isn't a folder in the checkout; the build step (uv build or python -m build) should make it"

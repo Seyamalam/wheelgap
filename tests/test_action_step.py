@@ -555,6 +555,9 @@ def test_dist_when_the_previous_release_lookup_fails(run_step):
     [
         ("-x", "dist must be a folder in the checkout"),
         ("/etc", "dist must be a folder in the checkout"),
+        ("../out", "dist must be a folder in the checkout"),
+        ("build/../../out", "dist must be a folder in the checkout"),
+        ("..", "dist must be a folder in the checkout"),
         ("missing", "isn't a folder in the checkout"),
     ],
 )
