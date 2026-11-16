@@ -241,8 +241,13 @@ class Locator:
         found = self.found[id(source)]
         if source.kind == "requirements":
             # The package came from a line with its name and markers (constraints change only the version). If
-            # there are two such lines, it could be either, so neither is used.
-            matches = [(f, n) for p, f, n in found.get(package.key, []) if p.markers == package.markers]
+            # there are two such lines, it could be either, so neither is used. Under --deps the resolved
+            # package no longer carries the requirement's markers, so only the name decides.
+            matches = [
+                (f, n)
+                for p, f, n in found.get(package.key, [])
+                if source.deps_paths is not None or p.markers == package.markers
+            ]
             return matches[0] if len(matches) == 1 else (source.path, None)
         numbers = found.get((package.key, package.version), [])
         # pdm.lock and Pipfile.lock keep the first entry of a name and version (sources._add_once); the other
@@ -251,14 +256,43 @@ class Locator:
             return source.path, numbers[0]
         return source.path, None
 
+    def deps_resolved(self, package: Package) -> bool:
+        """Whether the package's source is one --deps resolved, so its file's own requirements are its roots."""
+        source = self.sources.get(id(package))
+        return source is not None and source.deps_paths is not None
+
+    def locate_via(self, package: Package, name: str) -> Location | None:
+        """The line of the requirement `name` that pulls `package` into the tree --deps resolved: the file's own
+        requirement with that name, when there's exactly one. None otherwise."""
+        source = self.sources.get(id(package))
+        if source is None or source.path is None or source.deps_paths is None or source.kind != "requirements":
+            return None
+        if id(source) not in self.found:
+            self.found[id(source)] = self._read(source, source.path)
+        matches = self.found[id(source)].get(canonicalize_name(name), [])
+        return (matches[0][1], matches[0][2]) if len(matches) == 1 else None
+
     @staticmethod
     def _read(source: Source, path: Path) -> dict:
         if source.kind == "requirements":
             scanned = requirement_lines(path)
+            if scanned is None:
+                return {}
             # The scan must find the same requirements as the parser, in the same order, or no line is trusted.
-            if scanned is None or [(p.key, p.markers) for p, _, _ in scanned] != [
-                (p.key, p.markers) for p in source.packages if not p.skip
-            ]:
+            # With --deps, source.packages is the resolved tree; the lines still answer for the file's own
+            # requirements, which source.specs holds exactly as the parser read them.
+            if source.deps_paths is not None:
+                try:
+                    expected = [
+                        (p.key, p.markers)
+                        for spec in source.specs
+                        if not (p := requirement_to_package(spec, path.name)).skip
+                    ]
+                except SourceError:
+                    return {}  # a spec the scan and the parser can't agree on: no line is safe
+            else:
+                expected = [(p.key, p.markers) for p in source.packages if not p.skip]
+            if [(p.key, p.markers) for p, _, _ in scanned] != expected:
                 return {}
             by_name: dict[str, list[tuple[Package, Path, int | None]]] = {}
             for package, file, number in scanned:
@@ -302,7 +336,19 @@ def annotation(
     pkg = row.package
     name = f"{pkg.name} {pkg.version}" if pkg.version else pkg.name
     parts = [f"{GAP_WORDS[s][1]} {', '.join(by_status[s])}" for s in GAP_WORDS if s in by_status]
-    message = f"{name} {'; '.join(parts)}."
+    # --deps: a package the resolved tree pulls in has no line of its own; the direct requirement that pulls it
+    # in does, when exactly one leads to it on every gap target. Name it in the message either way.
+    direct: dict[str, str] = {}
+    if locator.deps_resolved(pkg):
+        for t in targets:
+            if t not in row.ignored and row.results[t] in GAP_WORDS:
+                for n in row.direct_via.get(t, ()):
+                    direct.setdefault(canonicalize_name(n), n)
+    names = list(direct.values())
+    message = f"{name} {'; '.join(parts)}"
+    if names:
+        message += f" (via {', '.join(names)})"
+    message += "."
     if pkg.error:
         message += f" Lookup error: {pkg.error}."
     if level == "warning":
@@ -312,6 +358,10 @@ def annotation(
         else:
             message += " Gaps on advisory targets don't fail the run."
     location = locator.locate(pkg)
+    # One requirement pulls it in on every gap target: put the annotation on that requirement's line. More
+    # than one, or an uncertain line, stays file-only — a wrong line is worse than none.
+    if len(names) == 1 and (via := locator.locate_via(pkg, names[0])) is not None:
+        location = via
     file = line = None
     if location is not None:
         file = relative_path(location[0])
