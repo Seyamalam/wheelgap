@@ -477,7 +477,8 @@ def _suggestions(results: list[Result]) -> dict[int, release_suggest.Suggestion]
             rows.setdefault(key, []).append(id(r))
     if not by_key:
         return {}
-    found, _ = release_suggest.look_up_all(by_key)
+    wanted: release_suggest.Wanted = dict(by_key)  # look_up_all takes Sequences: dict values aren't covariant
+    found, _ = release_suggest.look_up_all(wanted)
     return {i: s for key, ss in found.items() for i, s in zip(rows[key], ss, strict=True)}
 
 
