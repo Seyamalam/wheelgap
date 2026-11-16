@@ -809,23 +809,58 @@ def test_check_dist_applies_its_own_projects_config(fake_pypi, tmp_path, monkeyp
     data = reply["result"]["structuredContent"]
     assert data["targets"] == ["3.13 linux-x86_64", "3.13 win-arm64"]
     assert data["dropped"] == {}  # an advisory target is never a drop
-    assert data["ok"] is True
+    assert data["ok"] is False and data["passes"] is True  # its source build is still a gap; it just doesn't fail
 
 
-def test_check_dist_ok_ignores_an_ignored_targets_gap(fake_pypi, tmp_path, monkeypatch):
-    # Pyodide can't build the sdist (missing), but that target is ignored; macOS builds it (source), which ok allows.
+def test_check_dist_a_source_build_is_not_ok(fake_pypi, tmp_path):
+    # macOS only has the sdist to build from: wheelgap doesn't know it builds, so ok is false, as in the other tools.
+    folder = dist(tmp_path, LINUX_WHEEL, SDIST)
+    (_, reply) = run(
+        init(), call("check_dist", path=str(folder), python="3.13", targets=["linux-x86_64", "macos-arm64"])
+    )
+    data = reply["result"]["structuredContent"]
+    assert data["dropped"] == {}
+    assert data["gaps"][0]["gaps"] == ["3.13 macos-arm64"]
+    assert data["ok"] is False and data["passes"] is False
+
+
+def test_check_dist_a_missing_wheel_is_not_ok(fake_pypi, tmp_path):
+    folder = dist(tmp_path, "firstpkg-1.0-cp313-cp313-manylinux_2_17_x86_64.whl")  # no sdist
+    (_, reply) = run(init(), call("check_dist", path=str(folder), python="3.13", targets=["linux-x86_64", "win-amd64"]))
+    data = reply["result"]["structuredContent"]
+    assert data["dropped"] == {}
+    assert data["gaps"][0]["results"]["3.13 win-amd64"] == "missing"
+    assert data["ok"] is False
+
+
+def test_check_dist_an_ignored_targets_gap_is_ok(fake_pypi, tmp_path, monkeypatch):
+    # Pyodide can't build the sdist (missing), but that target is ignored.
     (tmp_path / "pyproject.toml").write_text('[tool.wheelgap]\nignore = ["distpkg:pyodide"]\n', encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
     folder = dist(tmp_path, LINUX_WHEEL, SDIST)
     (_, reply) = run(
         init(),
-        call("check_dist", path=str(folder), python="3.13", targets=["linux-x86_64", "macos-arm64", "pyodide"]),
+        call("check_dist", path=str(folder), python="3.13", targets=["linux-x86_64", "pyodide"]),
     )
     data = reply["result"]["structuredContent"]
-    assert data["gaps"][0]["results"]["3.13 pyodide"] == "missing"
-    assert data["gaps"][0]["gaps"] == ["3.13 macos-arm64"]
-    assert data["dropped"] == {}
+    assert data["gaps"] == [] and data["dropped"] == {}
     assert data["ok"] is True
+
+
+def test_check_dist_finds_the_project_above_a_nested_build_folder(fake_pypi, tmp_path, monkeypatch):
+    # maturin leaves wheels in target/wheels: the settings are two folders up, not in target/.
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.wheelgap]\npython = ["3.13"]\ntargets = ["linux-x86_64", "win-arm64"]\n', encoding="utf-8"
+    )
+    folder = tmp_path / "target" / "wheels"
+    folder.mkdir(parents=True)
+    for name in (LINUX_WHEEL, SDIST):
+        (folder / name).write_bytes(b"")
+    monkeypatch.chdir(tmp_path / "target")
+    (_, reply) = run(init(), call("check_dist", path=str(folder)))
+    data = reply["result"]["structuredContent"]
+    assert data["targets"] == ["3.13 linux-x86_64", "3.13 win-arm64"]
+    assert data["dropped"] == {"3.13 win-arm64": "1.0"}
+    assert data["ok"] is False
 
 
 def test_check_dist_takes_a_file_uri(fake_pypi, tmp_path):

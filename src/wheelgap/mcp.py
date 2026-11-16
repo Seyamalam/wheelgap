@@ -309,18 +309,18 @@ TOOLS: list[dict[str, Any]] = [
         "title": "Check a release's files before upload",
         "description": (
             "Check the wheels and sdist about to be uploaded — the dist/ folder `uv build` or `python -m build` "
-            "leaves — as `wheelgap --dist DIR --json` does: per target, whether a wheel installs or the sdist "
-            "builds, with the name and version taken from the filenames (a folder mixing projects or versions is "
-            "an error). The files are also compared with the newest release on PyPI older than the one in the "
-            "folder: 'dropped' maps each target that release had an installable wheel for but this one doesn't "
-            "to that release's version. A first release compares as 'dropped': {}. When the comparison couldn't "
+            "leaves — as `wheelgap --dist DIR --json` does: per target, whether a wheel installs or only the "
+            "sdist is there to build from, with the name and version taken from the filenames (a folder mixing "
+            "projects or versions is an error). The files are also compared with the newest release on PyPI "
+            "older than the one in the folder: 'dropped' maps each checked target that release had an "
+            "installable wheel for but this one doesn't to that release's version (advisory and ignored targets "
+            "never count as dropped). A first release compares as 'dropped': {}. When the comparison couldn't "
             "run — the index lookup failed, or an index variable is set, which may name another project of the "
             "same name — 'dropped' is absent and 'ok' is false rather than a guess. [tool.wheelgap] settings and "
-            ".python-version come from the folder holding the dist folder, as a lockfile's come from its own. "
-            "'ok' is true only when every target installs — a wheel, or the sdist builds — and nothing was "
-            "dropped; 'passes' is the command "
-            "line's verdict, which also fails on source-build and missing gaps as the release gate does. "
-            + _STATUS_HELP
+            ".python-version come from the nearest folder above it with a pyproject.toml (else the folder "
+            "holding it), not the server's working directory. 'ok' is true only when every target has a wheel "
+            "and nothing was dropped; 'passes' is the command line's verdict, which a gap on an advisory target "
+            "doesn't fail, so it can be true while 'ok' is false. " + _STATUS_HELP
         ),
         "inputSchema": {
             "type": "object",
@@ -331,7 +331,11 @@ TOOLS: list[dict[str, Any]] = [
                     "path is looked for in the client's roots if it shares them, else in the server's working "
                     "directory).",
                 },
-                "python": _PYTHON_PROP | {"description": _PYTHON_PROP["description"] + " Default: the server's."},
+                "python": _PYTHON_PROP
+                | {
+                    "description": _PYTHON_PROP["description"] + " Default: [tool.wheelgap] python, then "
+                    ".python-version in the project folder, else the server's."
+                },
                 "targets": _TARGETS_PROP,
                 **_VERSION_PROPS,
             },
@@ -655,19 +659,18 @@ def _check_dist(args: dict[str, Any]) -> dict[str, Any]:
     dist = _existing(_string(args, "path", required=True) or "")
     if not dist.is_dir():
         raise ToolError(f"{args['path']}: is not a folder (pass the folder of built files)")
-    argv = ["--json", f"--dist={dist}"]
+    # --color=never: a dim() note under FORCE_COLOR would no longer start "wheelgap: " and would be lost.
+    argv = ["--json", "--color=never", f"--dist={dist}"]
     argv += [f"--python={p}" for p in _pythons(args)]
     argv += [f"--target={p}" for p in _platforms(args)]
     argv += [f"--{key}={value}" for key, value in _versions(args).items()]
-    out = _run_cli(argv, dist, positional=False)
-    if "dropped" not in out:
-        out["ok"] = False  # the previous-release comparison couldn't run: say so rather than guess
-    else:
-        # "Every target installs": a wheel, or the sdist builds; missing and unknown say it doesn't.
-        # Only the gap cells count: an --ignore'd target's missing wheel doesn't fail it, as in the other tools.
-        out["ok"] = not out["dropped"] and not any(
-            gap["results"][cell] in _GAP - {Status.SOURCE.value} for gap in out["gaps"] for cell in gap["gaps"]
-        )
+    # The project that built it: the nearest folder above with a pyproject.toml (dist/ beside it, or maturin's
+    # target/wheels), else the folder holding it. Never the server's working directory, another project's.
+    project = next((d for d in dist.absolute().parents if (d / "pyproject.toml").is_file()), dist.absolute().parent)
+    out = _run_cli(argv, dist, positional=False, project=project)
+    # As in the other tools, ok means no gap at all (a source build needs a compiler; wheelgap doesn't check it
+    # builds), and also that the comparison ran and dropped nothing: absent 'dropped' is never read as {}.
+    out["ok"] = out["ok"] and out.get("dropped") == {}
     return out
 
 
@@ -752,17 +755,17 @@ def _clip(text: str, limit: int = 200) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
-def _run_cli(argv: list[str], path: Path, *, positional: bool = True) -> dict[str, Any]:
+def _run_cli(argv: list[str], path: Path, *, positional: bool = True, project: Path | None = None) -> dict[str, Any]:
     """`wheelgap ARGV -- PATH` with --json in ARGV: its result as the lockfile tools return it. positional=False
     runs `wheelgap ARGV` with no input at all (check_dist: --dist takes none) and keeps PATH in the result; the
-    settings then come from the folder holding PATH, never the server's working directory (another project's)."""
+    settings then come from PROJECT, never the server's working directory (another project's)."""
     from . import cli
 
     argv = [*argv, "--", str(path)] if positional else argv
     out, err = io.StringIO(), io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main(argv) if positional else cli.main(argv, project=path.resolve().parent)
+            code = cli.main(argv, project=project)
     except SystemExit as e:  # argparse rejected a value
         code = e.code if isinstance(e.code, int) else 2
     messages = [line.removeprefix("wheelgap: ") for line in err.getvalue().splitlines() if line.strip()]
