@@ -177,7 +177,8 @@ TOOLS: list[dict[str, Any]] = [
             "nothing was looked up. With dependencies: true, also checks everything the package installs, resolved "
             "for each target from PyPI's metadata as wheelgap --deps does: dependency_gaps lists each other "
             "package in the tree with a gap, with its results, gaps and via (the path from this package to it on "
-            "each gap target) and its own suggest and last_with_wheel, plus issues_url with explain: true; "
+            "each gap target) and its own suggest and last_with_wheel (not checked against what the rest of the "
+            "tree requires: via shows who pulls it in), plus issues_url with explain: true; "
             "dependencies_checked counts the other packages checked, and ok is true only if nothing in the tree has "
             "a gap. A tree that can't be settled without a backtracking resolver is an "
             "error, as on the command line. " + _STATUS_HELP
@@ -465,16 +466,18 @@ def _suggestions(results: list[Result]) -> dict[int, release_suggest.Suggestion]
     by_key: dict[str, list[tuple[str, list[Target], list[Target]]]] = {}
     rows: dict[str, list[int]] = {}
     for r in results:
-        if r.version and r.gaps:
+        # As --explain --suggest does (gap_targets): only source and missing targets, and no row whose lookup failed.
+        # An unknown target was never checked, so a way out for it would be a guess about a release that may be fine.
+        gaps = [t for t, s in r.statuses.items() if s in (Status.SOURCE, Status.MISSING)]
+        if r.version and gaps and r.error is None:
             key = canonicalize_name(r.name)
             # As version_suggestions does: a suggestion must keep a wheel on every target this row has one on.
             keep = [t for t, s in r.statuses.items() if s is Status.WHEEL]
-            by_key.setdefault(key, []).append((r.version, r.gaps, keep))
+            by_key.setdefault(key, []).append((r.version, gaps, keep))
             rows.setdefault(key, []).append(id(r))
     if not by_key:
         return {}
-    wanted: release_suggest.Wanted = {key: rows_list for key, rows_list in by_key.items()}
-    found, _ = release_suggest.look_up_all(wanted)
+    found, _ = release_suggest.look_up_all(by_key)
     return {i: s for key, ss in found.items() for i, s in zip(rows[key], ss, strict=True)}
 
 
@@ -573,8 +576,16 @@ def _check_package(args: dict[str, Any]) -> dict[str, Any]:
             if not r.ok
         ]
     out["targets"] = [t.label(True) for t in targets]
-    if (w := ways.get(id(result))) is not None:
-        out.update(_way_out(w))
+    # Every release the package resolved to, not just the first: each Python's gap targets are its own. If any row
+    # that was looked up has no answer, the keys are left out (one project page answers them all).
+    looked = [r for r in asked if r.version and r.error is None and any(s in (Status.SOURCE, Status.MISSING)
+                                                                        for s in r.statuses.values())]  # fmt: skip
+    if looked and all(id(r) in ways for r in looked):
+        merged: dict[str, dict[str, str]] = {"suggest": {}, "last_with_wheel": {}}
+        for r in looked:
+            for k, v in _way_out(ways[id(r)]).items():
+                merged[k].update(v)
+        out.update(merged)
     out["assumes"] = {
         "glibc": versions.get("glibc", DEFAULT_GLIBC),
         "musl": versions.get("musl", DEFAULT_MUSL),

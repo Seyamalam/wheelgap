@@ -326,8 +326,11 @@ The tree is resolved for each target from PyPI's metadata, and the result adds
 `dependency_gaps`: each package in the tree with a gap, with its `results`,
 `gaps` and `via`, the path to it on each gap target, such as
 `{"3.13 win-arm64": ["mcp", "PyJWT", "cryptography"]}`, and (after 0.12.0) its
-own `suggest` and `last_with_wheel` from one batched lookup for the whole
-tree. The other fields stay
+own `suggest` and `last_with_wheel`, looked up for the whole tree together.
+Those aren't checked against what the rest of the tree requires, so a parent
+may pin the dependency elsewhere: `via` shows who pulls it in. With several
+Pythons, the package's own `suggest` and `last_with_wheel` cover every release
+it resolved to. The other fields stay
 those of the package asked about, except `ok`, which is then true only if
 nothing in the tree has a gap. A tree that only a backtracking resolver could
 settle is an error, as it is on the command line.

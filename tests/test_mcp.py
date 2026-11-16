@@ -195,6 +195,49 @@ def test_check_package_dependencies_gaps_get_the_way_out(index, monkeypatch):  #
     assert index.count("https://pypi.org/pypi/dropped/json") == 2
 
 
+def test_check_package_no_way_out_for_targets_it_never_checked(fake_pypi, monkeypatch):
+    # 1.5 isn't on the index: every target is unknown, so there's no gap to suggest a way out of (as the CLI).
+    monkeypatch.setitem(FAKE_INDEX, "latewheel", LATEWHEEL)
+    (_, reply) = run(
+        init(), call("check_package", name="latewheel", version="1.5", python="3.13", targets=["win-arm64"])
+    )
+    data = reply["result"]["structuredContent"]
+    assert data["results"] == {"3.13 win-arm64": "unknown"}
+    assert "suggest" not in data and "last_with_wheel" not in data
+
+
+@pytest.mark.usefixtures("index")
+def test_check_package_way_out_covers_every_release_it_resolved_to(monkeypatch):
+    # split resolves to 1.0 on 3.14 and 2.0 on 3.15, both without a Windows ARM wheel: each has its own way out.
+    import test_deps
+
+    monkeypatch.setitem(
+        test_deps.INDEX,
+        "split",
+        {
+            "1.0": test_deps.release(files=(test_deps.LINUX,)),
+            "2.0": test_deps.release(files=(test_deps.LINUX,), requires_python=">=3.15"),
+        },
+    )
+    newer = {"1.0": "1.5", "2.0": "2.5"}
+
+    def fake(results):
+        return {
+            id(r): mcp.release_suggest.Suggestion(found={t: newer[r.version] for t in r.gaps})
+            for r in results
+            if r.name == "split" and r.gaps
+        }
+
+    monkeypatch.setattr(mcp, "_suggestions", fake)
+    (_, reply) = run(
+        init(), call("check_package", name="split", python="3.14,3.15", targets=["win-arm64"], dependencies=True)
+    )
+    data = reply["result"]["structuredContent"]
+    assert data["versions"] == ["1.0", "2.0"]
+    assert data["suggest"] == {"3.14 win-arm64": "1.5", "3.15 win-arm64": "2.5"}
+    assert data["last_with_wheel"] == {}
+
+
 def test_check_package_looks_up_older_releases_only_for_gaps_on_pypi(fake_pypi, monkeypatch):
     monkeypatch.setitem(FAKE_INDEX, "wheelstopped", WHEELSTOPPED)
     (_, reply) = run(init(), call("check_package", name="purewheel", python="3.13", targets=["linux-x86_64"]))
