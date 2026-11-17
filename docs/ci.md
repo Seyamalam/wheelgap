@@ -163,9 +163,10 @@ repos:
 ```
 
 The hook runs when `uv.lock`, `poetry.lock`, `pdm.lock`, `pylock.toml`, `Pipfile.lock`, `pixi.lock`, or a
-`requirements*.txt` or `requirements*.lock` file changes. Put your targets in `[tool.wheelgap]` in
-`pyproject.toml` so the hook checks the right platforms. Pass extra options with `args:`, for example
-`args: [--fail-on, missing]`.
+`requirements*.txt` or `requirements*.lock` file changes — and when `pyproject.toml` (`[tool.wheelgap]` and
+`[tool.uv]` settings change the answer), `uv.toml` or `.python-version` does. Put your targets in
+`[tool.wheelgap]` in `pyproject.toml` so the hook checks the right platforms. Pass extra options with `args:`,
+for example `args: [--fail-on, missing]`.
 
 ## Code scanning {#code-scanning}
 
