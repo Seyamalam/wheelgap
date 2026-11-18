@@ -725,6 +725,7 @@ def test_value(text, expected):
         ("*anchor", "an alias"),
         ('"a\\tb"', "a quoted value with escapes"),
         ('"a\\"b" # c', "a quoted value with escapes"),
+        ('"a\\\tb"', "a quoted value with escapes"),  # `\` then a tab is a valid YAML 1.2 escape
     ],
 )
 def test_values_that_are_never_read(text, kind):

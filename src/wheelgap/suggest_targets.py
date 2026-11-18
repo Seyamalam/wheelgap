@@ -387,6 +387,10 @@ _OPEN_MAP = object()  # `{` alone: a flat flow mapping continues on the next lin
 _OPEN_QUOTE = object()
 
 
+# YAML 1.2's double-quoted escapes; `\` before a tab is one too.
+_ESCAPE = re.compile(r'\\(?:[0abtnvfre "/\\N_LP\t]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})')
+
+
 def _quoted_end(text: str, quote: str, line: int) -> int | None:
     """The end of a whole quoted value's line, or None when it continues. Its contents are never decoded."""
     pos = 0
@@ -399,7 +403,7 @@ def _quoted_end(text: str, quote: str, line: int) -> int | None:
         if quote == '"' and char == "\\":
             if pos + 1 == len(text):  # YAML's escaped line break
                 return None
-            escape = re.match(r'\\(?:[0abtnvfre "/\\N_LP]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})', text[pos:])
+            escape = re.match(_ESCAPE, text[pos:])
             if escape is None or escape.group().startswith("\\U") and int(escape.group()[2:], 16) > 0x10FFFF:
                 raise _NotRead(line, text)
             pos += len(escape.group())
