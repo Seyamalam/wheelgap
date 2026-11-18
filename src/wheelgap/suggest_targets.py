@@ -351,6 +351,8 @@ class _Flow:
 
         def pair() -> None:
             m = _QUOTED_RE.match(self.text, self.pos) or _KEY_RE.match(self.text, self.pos)
+            if m and m.group()[0] in "'\"":
+                _check_quoted(m.group()[1:-1], m.group()[0], self.line)
             key = m.group()[1:-1] if m and m.group()[0] in "'\"" else m.group() if m else ""
             # `key: value`, with a space after the colon (JSON's `"key":value` isn't read)
             if (
@@ -370,6 +372,7 @@ class _Flow:
 
     def scalar(self) -> _Scalar:
         if m := _QUOTED_RE.match(self.text, self.pos):
+            _check_quoted(m.group()[1:-1], m.group()[0], self.line)
             self.pos = m.end()
             return _Scalar(m.group()[1:-1], True, self.line)
         if m := _FLOW_PLAIN_RE.match(self.text, self.pos):
@@ -391,8 +394,7 @@ def _quoted_end(text: str, quote: str, line: int) -> int | None:
         char = text[pos]
         if char == quote:
             if quote == "'" and text[pos : pos + 2] == "''":
-                pos += 2
-                continue
+                raise _NotRead(line, text)  # `''` is an escape, and quoted values with escapes are never read
             return pos + 1
         if quote == '"' and char == "\\":
             if pos + 1 == len(text):  # YAML's escaped line break
@@ -408,14 +410,22 @@ def _quoted_end(text: str, quote: str, line: int) -> int | None:
     return None
 
 
+def _check_quoted(inner: str, quote: str, line: int) -> None:
+    """The checks one-line and quoted-over-several-lines scalars share: a control character, a bad escape or `''`
+    in a single-quoted value refuses the file. (The text has no closing quote, so _quoted_end only validates.)"""
+    _quoted_end(inner, quote, line)
+
+
 def _value(text: str, line: int) -> tuple[object, str]:
     """The VALUE after `key:` or `- ` (spaces already skipped), parsed, and as written."""
     if not text or text.startswith("#"):
         return None, ""
     if text[0] in "'\"":
         if (m := _QUOTED_RE.match(text)) and _comment_only(text[m.end() :]):
+            _check_quoted(m.group()[1:-1], text[0], line)
             return _Scalar(m.group()[1:-1], True, line), m.group()
         if (m := _ESCAPED_RE.match(text)) and _comment_only(text[m.end() :]):
+            _check_quoted(m.group()[1:-1], text[0], line)
             return _ESCAPED, m.group()
         if _quoted_end(text[1:], text[0], line) is None:
             return _OPEN_QUOTE, text
@@ -446,6 +456,10 @@ def _split_key(body: str) -> tuple[str, str] | None:
     """`key: rest` -> (key, rest with leading spaces skipped), or None when the line doesn't start with a key."""
     if body[:1] in ("'", '"'):
         if not (m := _QUOTED_RE.match(body)):
+            return None
+        try:
+            _check_quoted(m.group()[1:-1], m.group()[0], 0)
+        except _NotRead:
             return None
         key, after = m.group()[1:-1], body[m.end() :]
     elif m := _KEY_RE.match(body):
