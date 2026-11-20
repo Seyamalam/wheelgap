@@ -331,13 +331,14 @@ def flat_pairs(rng, pairs, base, flow_item=False):
 
 def multiline_quote(rng, v, base):
     """The lines of a quoted scalar over several lines (never read): a random split point, varied continuation
-    indentation, optional blank lines, an `''` or `\\` escape at a line end, or a quote that closes mid-line."""
+    indentation, optional blank lines, an `''`, `\\"` or `\\` escape at a line end, or a quote that closes mid-line."""
     quote = rng.choice(["'", '"'])
     text = v.replace(quote, "")
     if quote == '"':
         text = text.replace("\\", "")
     cut = rng.randint(1, max(1, len(text) - 1)) if len(text) > 1 else 1
-    tail = rng.choice(["", "", "", "''" if quote == "'" else "\\"])
+    # `''` and `\"` end the line with what looks like a closing quote but isn't; `\` is an escaped line break.
+    tail = rng.choice(["", "", "", *(["''"] if quote == "'" else ['\\"', "\\"])])
     lines = [quote + text[:cut] + tail]
     pad = " " * (base + rng.randint(1, 5))
     if rng.random() < 0.2:
