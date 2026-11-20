@@ -60,7 +60,7 @@ def test_pip_way_for_package_names_and_the_same_exit_code(capsys, fake_pypi, gap
         "\n"
         "How these wheels are built and checked: https://wheelgap.github.io/wheels/\n"
     )
-    assert out == out_plain + section  # after the normal output, which is unchanged
+    assert out == out_plain.removesuffix(HINT + "\n") + section  # --fix replaces the hint at itself
     assert "[tool.uv" not in out
 
 
@@ -91,7 +91,7 @@ def test_uv_way_for_a_uv_lock_with_direct_and_transitive_packages(capsys, fixtur
     code_plain, out_plain, _ = run(capsys, *args)
     code, out, _ = run(capsys, *args, "--fix")
     assert code == code_plain == 1
-    assert out.removeprefix(out_plain) == (
+    assert out.removeprefix(out_plain.removesuffix(HINT + "\n")) == (
         "\n"
         "wheelgap's gap wheel index has wheels PyPI lacks for:\n"
         "  nativeext 0.3: win-arm64\n"
@@ -256,7 +256,7 @@ def test_unreadable_list_is_a_note_with_the_same_exit_code(capsys, fake_pypi, ga
     gap_wheels.doc = doc
     code_plain, out_plain, _ = run(capsys, *NOWHEELS)
     code, out, err = run(capsys, *NOWHEELS, "--fix")
-    assert code == code_plain == 1 and out == out_plain
+    assert code == code_plain == 1 and out == out_plain.removesuffix(HINT + "\n")
     assert UNREADABLE in err and NOTHING_FITS not in err
     _, out, err = run(capsys, *NOWHEELS, "--fix", "-q")
     assert UNREADABLE in err  # even with -q: otherwise it would read as "nothing fits"
@@ -404,7 +404,7 @@ def test_uv_way_for_a_script_goes_in_its_script_block(capsys, fake_pypi, gap_whe
     code_plain, out_plain, _ = run(capsys, *args)
     code, out, _ = run(capsys, *args, "--fix")
     assert code == code_plain == 1
-    assert out.removeprefix(out_plain) == (
+    assert out.removeprefix(out_plain.removesuffix(HINT + "\n")) == (
         "\n"
         "wheelgap's gap wheel index has wheels PyPI lacks for:\n"
         "  nowheels 0.9: win-arm64\n"
@@ -449,7 +449,7 @@ def test_uv_way_for_a_script_lock_goes_in_the_scripts_block(capsys, gap_wheels, 
     code_plain, out_plain, _ = run(capsys, *args)
     code, out, _ = run(capsys, *args, "--fix")
     assert code == code_plain == 1
-    assert out.removeprefix(out_plain) == (
+    assert out.removeprefix(out_plain.removesuffix(HINT + "\n")) == (
         "\n"
         "wheelgap's gap wheel index has wheels PyPI lacks for:\n"
         "  nowheels 0.9: win-arm64\n"
@@ -748,3 +748,46 @@ def test_print_gap_wheel_snippet_refused_combinations(capsys, gap_wheels, fixtur
     err = capsys.readouterr().err
     assert "--print-gap-wheel-snippet" in err and flag in err
     assert gap_wheels.calls == 0
+
+
+HINT = "Run with --fix to see whether wheelgap's gap wheel index has a wheel for these."
+
+
+def test_fix_hint_at_the_end_of_a_run_with_a_gap(capsys, fake_pypi, gap_wheels):
+    code, out, _ = run(capsys, *NOWHEELS)
+    assert code == 1 and out.endswith(HINT + "\n")
+    assert gap_wheels.calls == 0  # the hint never reads the gap wheel list
+
+
+def test_fix_hint_at_the_end_of_the_markdown_report(capsys, fake_pypi, gap_wheels):
+    code, out, _ = run(capsys, *NOWHEELS, "--markdown")
+    assert code == 1 and out.rstrip().endswith(HINT) and gap_wheels.calls == 0
+    code, out, _ = run(capsys, *NOWHEELS, "--markdown", "--fix")
+    assert code == 1 and HINT not in out
+
+
+@pytest.mark.parametrize("args", [["--fix"], ["-q"], ["--json"], ["--offline"]])
+def test_no_fix_hint(capsys, fake_pypi, gap_wheels, args):
+    _, out, _ = run(capsys, *NOWHEELS, *args)
+    assert HINT not in out
+
+
+def test_no_fix_hint_with_another_index(capsys, fake_pypi, gap_wheels, tmp_path):
+    # --index-url means the packages may not be PyPI's, so --fix is off and no hint is offered.
+    (tmp_path / "requirements.txt").write_text("nowheels==0.9\n", encoding="utf-8")
+    args = [str(tmp_path / "requirements.txt"), "-p", "3.14t", "-t", "win-arm64",
+            "--index-url", "https://example.org/simple"]  # fmt: skip
+    _, out, _ = run(capsys, *args)
+    assert HINT not in out
+
+
+def test_no_fix_hint_when_no_gap_wheel_could_help(capsys, fake_pypi, gap_wheels, tmp_path):
+    # --no-binary: the gap is real, but pip wouldn't take a wheel for it, so the hint stays off.
+    req = tmp_path / "requirements.txt"
+    req.write_text("--no-binary nowheels\nnowheels==0.9\n", encoding="utf-8")
+    code, out, _ = run(capsys, str(req), "-p", "3.14t", "-t", "win-arm64")
+    assert code != 0 and HINT not in out
+    # A private-index package's gap: it isn't positively PyPI's, so no hint.
+    (tmp_path / "uv.lock").write_text(uv_lock("https://pkgs.example.com/simple"), encoding="utf-8")
+    code, out, _ = run(capsys, str(tmp_path / "uv.lock"), "-p", "3.14t", "-t", "win-arm64")
+    assert code != 0 and HINT not in out

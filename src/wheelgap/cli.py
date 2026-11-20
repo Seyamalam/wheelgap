@@ -1283,6 +1283,7 @@ def render_markdown(
     dropped: dict[str, str] | None = None,
     issues_urls: dict[int, str | None] | None = None,
     pi_wheels: dict[int, piwheels.Hint] | None = None,
+    fix_hint: str | None = None,
 ) -> list[str]:
     """The same report as the text output, as GitHub-flavoured Markdown (for a job summary or a PR comment)."""
     plain = Style(False)
@@ -1378,6 +1379,8 @@ def render_markdown(
                     ]
             if sug_lines:
                 out += [*sug_lines, ""]
+    if fix_hint:
+        out += [_md(fix_hint), ""]
     return out
 
 
@@ -1629,6 +1632,25 @@ def version_suggestions(
     }
 
 
+def _fix_scope(sources: list[Source], index_url: str | None) -> tuple[frozenset[str], dict[int, Source]]:
+    """The private-name set and package -> Source map both --fix and the hint at it decide eligibility with."""
+    return origin.private_names(sources, simple_index=index_url), {
+        id(p): s for s in sources for original in s.packages for p in original.variants
+    }
+
+
+def fix_hint(gaps: list[Row], targets: list[Target], sources: list[Source], index_url: str | None) -> str | None:
+    """The pointer to --fix a run may end with, when packages aren't known to come from another index and a gap
+    of one that is positively PyPI's might take a gap wheel. It never reads the gap wheel list."""
+    if origin.other_index(index_url) is not None:
+        return None
+    private, source_of = _fix_scope(sources, index_url)
+    for r in gaps:
+        if gapwheels.candidates(r, targets) and gapwheels.eligible(r, source_of[id(r.package)], index_url, private):
+            return "Run with --fix to see whether wheelgap's gap wheel index has a wheel for these."
+    return None
+
+
 def gap_wheel_fills(
     gaps: list[Row],
     targets: list[Target],
@@ -1653,8 +1675,7 @@ def gap_wheel_fills(
                 file=sys.stderr,
             )
         return []
-    private = origin.private_names(sources, simple_index=index_url)
-    source_of = {id(p): s for s in sources for original in s.packages for p in original.variants}
+    private, source_of = _fix_scope(sources, index_url)
     candidates = [r for r in gaps if gapwheels.candidates(r, targets)]
     wanted = [r for r in candidates if gapwheels.eligible(r, source_of[id(r.package)], index_url, private)]
     # Only those the origin rule turned away: a --no-binary package wouldn't use a wheel anyway.
@@ -2487,6 +2508,10 @@ def _main(argv: list[str], project: Path | None = None) -> int:
         else None
     )
 
+    # The pointer at --fix, where --fix itself isn't offered: not asked for, not quiet or offline (--fix is an
+    # error there), and never in --json or --print-gap-wheel-snippet, whose outputs return before it prints.
+    hint = fix_hint(gaps, targets, sources, index_url) if not (args.fix or quiet or offline) else None
+
     if args.print_gap_wheel_snippet:  # one input of gapwheels.SNIPPET_KINDS, checked when it was read
         multi_py = len({t.python for t in targets}) > 1
         if snippet := gapwheels.project_snippet_lines(fills or [], sources[0], multi_py):
@@ -2590,6 +2615,7 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                         dropped=dropped,
                         issues_urls=issues_urls,
                         pi_wheels=pi_wheels,
+                        fix_hint=hint,
                     ),
                     *gapwheels.markdown_lines(fills or [], multi_py),
                 ]
@@ -2696,6 +2722,8 @@ def _main(argv: list[str], project: Path | None = None) -> int:
         print(style.dim(line))
     if not args.explain:
         print(style.dim("Run with --explain to see which wheels were rejected and why."))
+    if hint:
+        print(style.dim(hint))
     if source_allowed and not args.exit_zero:
         print(style.dim("Source builds are allowed (--fail-on missing), so this run passes."))
     for ln in fix_lines:  # a gap wheel fills only a gap, so the runs that return early above have none

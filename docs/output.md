@@ -37,6 +37,7 @@ linux-aarch64  3 from source
 musl-aarch64   3 from source
 3 of 5 packages have gaps: 3 will build from source.
 Run with --explain to see which wheels were rejected and why.
+Run with --fix to see whether wheelgap's gap wheel index has a wheel for these.
 ```
 
 Each cell is one of:
@@ -490,6 +491,8 @@ wheelgap 0.13.0 · `uv.lock` · 5 packages · Python 3.13
 3 of 5 packages have gaps: 3 will build from source.
 
 Skipped 2 non-index packages: `demo` (editable), `gitdep` (git)
+
+Run with --fix to see whether wheelgap's gap wheel index has a wheel for these.
 ```
 
 `--json` and `--markdown` can't be used together.
