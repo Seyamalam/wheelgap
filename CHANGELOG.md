@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The `check-wheels` skill, the Cursor rule and `llms.txt` say more about `--fix`'s gap wheel fallback: for poetry.lock, pdm.lock and other lockfiles, add the index where the lock is made and lock again (never invent `[tool.uv]` or `--extra-index-url` lines for them); for a uv.lock, `[tool.uv.sources]` applies only to direct dependencies, so follow the output's note; after adding the index, a re-run on a requirements file, `pyproject.toml`, package names or a script still reports the gap, so don't loop on it; an empty `gap_wheels` isn't proof there's none; and never suggest the index in a project that installs from a private index. (#582, thanks [@Seyamalam](https://github.com/Seyamalam))
+
 ## 0.14.0 (2026-11-24)
 
 **`--fix` now says how to close each gap.** For each package that would build from source, it names the nearest newer official release that has the wheel, and what to run for your input: `uv lock --upgrade-package NAME` for a `uv.lock`, the new pin for a requirements file. Where no release has the wheel, or if you can't upgrade, it offers an unofficial wheel from wheelgap's [gap wheel index](https://wheelgap.github.io/wheels/), built by wheelgap from the PyPI sdist, not by the package's maintainers. In 83 pinned projects from the 300 most-starred Python repositories, 82% of the Python 3.15 gaps on Linux x86-64 were stale pins of this kind: the release with the wheel was already out. The upgrade lookups send the gap packages' names to pypi.org, as `--suggest` does, and only for packages positively from PyPI. `--json` adds each package's `fix` and a `fix_summary`, and the MCP tools `check_lockfile` and `check_dockerfile` take `fix: true`.
