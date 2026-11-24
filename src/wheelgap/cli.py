@@ -12,7 +12,7 @@ import sys
 import sysconfig
 import tomllib
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import packaging
@@ -2285,6 +2285,7 @@ def _main(argv: list[str], project: Path | None = None) -> int:
     docker_constraints: dict[Path, tuple[Path, ...]] = {}
     docker_line_files: dict[Path, tuple[Path, ...]] = {}  # each file's -r files of its pip install line, in order
     uv_installs: set[tuple[int, Path]] = set()
+    uv_syncs: dict[tuple[int, Path], tuple[bool, Path]] = {}  # (line, lock) -> (its --no-dev, its pyproject.toml)
     image: ImageTarget | None = None
     unknown_image: UnknownImageError | None = None
     # What the Dockerfile answer leaves out, for --json's dockerfile_notes: {"dockerfile", "line", "kind", "message"}.
@@ -2337,6 +2338,7 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 line_files=docker_line_files,
                 dependencies=args.deps,
                 uv_installs=uv_installs,
+                uv_syncs=uv_syncs,
                 report=inputs_report,
                 pythons=docker_pythons or ([image.python] if image is not None else None),
             )
@@ -2406,6 +2408,14 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 dockerfile_notes += notes
             if not quiet:
                 for install_line, requirements in installs:
+                    if (install_line, requirements) in uv_syncs:
+                        _, pyproject = uv_syncs[install_line, requirements]
+                        print(
+                            f"wheelgap: note: {args.dockerfile}:{install_line}: RUN uv sync reads "
+                            f"{requirements}, {pyproject}",
+                            file=sys.stderr,
+                        )
+                        continue
                     # Every file read: the requirements file and what it includes, then each -c file of the line
                     # and what that includes (a -r in a constraints file is requirements, a -c more constraints).
                     files = ", ".join(
@@ -2548,9 +2558,14 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 # RUN line, labelled with it, checked as names on wheelgap's own command line are.
                 # pip reads a `pip install -r FILE` file as requirements whatever its name, except a PEP 751 lock
                 # name (pylock.toml, pylock.NAME.toml), which pip 26.1 and later install as that lock; a uv line's
-                # file keeps the reader its name picks.
+                # file keeps the reader its name picks, and a `uv sync` line's lock is read as uv.lock whatever its
+                # context name (in the image it is uv.lock, which is what uv sync looks for).
                 docker_kinds = {
-                    req: "pylock" if _PIP_PYLOCK_NAME_RE.fullmatch(req.name) else "requirements"
+                    req: "uv"
+                    if (line, req) in uv_syncs
+                    else "pylock"
+                    if _PIP_PYLOCK_NAME_RE.fullmatch(req.name)
+                    else "requirements"
                     for line, req in installs
                     if (line, req) not in uv_installs
                 }
@@ -2684,18 +2699,24 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                     )
                 select_pyproject_groups(source, args.group or [], args.only_group or [])
                 select_pyproject_extras(source, args.extra or [], args.all_extras)
+        # A `uv sync` line's own flags are its lock's selection, applied below even with no selectors of
+        # wheelgap's own: `wheelgap uv.lock` with no flags checks all groups and extras, but a sync without them
+        # installs the defaults (and dev only without --no-dev). Selectors from wheelgap's command line or config
+        # apply to a sync lock as they do to a uv.lock given as an input.
+        sync_locks = {requirements for line, requirements in installs if (line, requirements) in uv_syncs}
+        selection = UvSelection(
+            extras=frozenset(canonicalize_name(name) for name in extra_names or []),
+            all_extras=args.all_extras,
+            groups=frozenset(canonicalize_name(name) for name in group_names or []),
+            no_dev=args.no_dev,
+            only_groups=frozenset(canonicalize_name(name) for name in args.only_group or []),
+        )
         if (from_cli or args.only_group or extra_names is not None or group_names is not None) and (
             lock_sources or not pyproject_sources
         ):
             select_uv_dependencies(
                 lock_sources,
-                UvSelection(
-                    extras=frozenset(canonicalize_name(name) for name in extra_names or []),
-                    all_extras=args.all_extras,
-                    groups=frozenset(canonicalize_name(name) for name in group_names or []),
-                    no_dev=args.no_dev,
-                    only_groups=frozenset(canonicalize_name(name) for name in args.only_group or []),
-                ),
+                selection,
                 # Configured extras apply to uv.lock and Poetry 2.x poetry.lock inputs, configured groups to those
                 # and pdm.lock inputs; on the command line they need one of those.
                 strict=bool(from_cli or args.only_group),
@@ -2703,6 +2724,14 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 poetry=bool(from_cli or args.only_group) or group_names is not None or extra_names is not None,
                 pdm=bool(from_cli or args.only_group) or group_names is not None,
             )
+        for source in lock_sources:
+            if source.path in sync_locks:
+                sync_line = next(install_line for install_line, requirements in installs if requirements == source.path)
+                select_uv_dependencies(
+                    [source],
+                    replace(selection, no_dev=selection.no_dev or uv_syncs[sync_line, source.path][0]),
+                    strict=False,
+                )
         if args.deps:
             dependency_sources = [s for s in sources if s.specs or s.pyproject_extras is not None]
             if not dependency_sources:
