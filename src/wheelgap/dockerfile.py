@@ -2467,6 +2467,7 @@ class _RunReader:
         self.image_read = image_read
         # Folders `python -m venv` made, with the X.Y of the Python that made them (None: the image's own).
         self.venvs: dict[str, str | None] = {}
+        self.cleared: dict[str, int] = {}  # how many times `python -m venv --clear` emptied each of them
         # Where a bare `pip`, `python` or `uv` comes from: None for the image's own, ("venv", folder) for a venv's
         # bin put first on the PATH, ("unknown", why) for a folder wheelgap knows nothing about.
         self.path: tuple[str, str] | None = None
@@ -2991,11 +2992,14 @@ class _RunReader:
                         detail.module = True
                     return self._into((kind, detail), self._environment(name, cwd))
                 if module == "uv":
-                    return self._into(self._uv(number, rest, uv_system, shown, stop), self._environment(name, cwd))
+                    return self._into(self._uv(number, rest, uv_system, shown, stop), None)  # see `uv` below
                 if module in ("venv", "virtualenv"):
                     folders = [word for word in rest if not word.text.startswith("-")]
                     if len(folders) == 1 and folders[0].exact and (cwd is not None or folders[0].text.startswith("/")):
-                        self.venvs[posixpath.normpath(posixpath.join(cwd or "/", folders[0].text))] = version
+                        folder = posixpath.normpath(posixpath.join(cwd or "/", folders[0].text))
+                        self.venvs[folder] = version
+                        if any(word.text == "--clear" for word in rest):  # emptied: a new environment
+                            self.cleared[folder] = self.cleared.get(folder, 0) + 1
                     return "venv", ""
                 if module == "ensurepip":
                     return "installer-tools", "pip"
@@ -3014,7 +3018,9 @@ class _RunReader:
         if base == "uv":
             if self.path is not None:  # uv pip install --system installs for the first Python on the PATH
                 self._python("python", "python", cwd, shown, stop)
-            return self._into(self._uv(number, args, uv_system, shown, stop), self._environment("python", cwd))
+            # --system passes over a venv's Python on the PATH (uv 0.13.1, -v: "Ignoring Python interpreter at
+            # `/venv/bin/python`: system interpreter required"), so it installs for the image's own.
+            return self._into(self._uv(number, args, uv_system, shown, stop), None)
         if base in _INSTALLERS:
             if [word.text for word in args] in (["--version"], ["-V"], ["--help"]):
                 return "shell", ""
@@ -3054,8 +3060,13 @@ class _RunReader:
         as _python reads it: a venv's bin/NAME, else the venv whose bin the PATH puts first."""
         if "/" in name:
             folder = posixpath.dirname(posixpath.dirname(posixpath.normpath(posixpath.join(cwd or "/", name))))
-            return folder if posixpath.basename(posixpath.dirname(name)) == "bin" and folder in self.venvs else None
-        return self.path[1] if self.path is not None and self.path[0] == "venv" else None
+            if posixpath.basename(posixpath.dirname(name)) != "bin" or folder not in self.venvs:
+                return None
+        elif self.path is not None and self.path[0] == "venv":
+            folder = self.path[1]
+        else:
+            return None
+        return f"{folder}#{self.cleared[folder]}" if folder in self.cleared else folder
 
     @staticmethod
     def _into(classified: tuple[str, object], env: str | None) -> tuple[str, object]:
@@ -3691,31 +3702,40 @@ def _dockerfile_requirements(
         # A name beside -r files also gets the -c lines inside them (sources.parse_named_requirements), which may pin
         # it: noted only on a line that names packages alone.
         own += [(requirement_to_package(name, ""), name, f"{tool} install {name}", not hosts) for name in install.names]
-        noted: set[str] = set()
-        after: dict[tuple[str | None, str], tuple[int, str, str | None]] = {}
-        for pkg, where, label, may_note in own:
-            if pkg.markers:
-                continue  # whether it is installed at all depends on the target, which isn't known here
-            key = (install.env, pkg.key)
+        if not install.uv and any(_PIP_PYLOCK_NAME_RE.fullmatch(host.name) for host in hosts):
+            # pip installs a lock's own versions over what is there (pip 26.3), and the lock isn't read here.
+            for key in [key for key in earlier if key[0] == install.env]:
+                del earlier[key]
+        # pip resolves every requirement of the line on one package together (-r files and names alike): a pin
+        # anywhere on the line, or a range the earlier release falls outside, decides what is installed.
+        by_key: dict[str, list[tuple[Package, str, str, bool]]] = {}
+        for entry in own:
+            by_key.setdefault(entry[0].key, []).append(entry)
+        for package, entries in by_key.items():
+            key = (install.env, package)
             before = earlier.get(key)
-            if install.upgrade or pkg.version is not None or pkg.skip is not None or before is None:
+            pkgs = [pkg for pkg, _, _, _ in entries]
+            pin = next((pkg.version for pkg in pkgs if pkg.version is not None), None)
+            if any(pkg.markers for pkg in pkgs) or (
+                before is not None and pin is None and not all(may for _, _, _, may in entries)
+            ):
+                # A marker (installed or not by the target) or a name a -c line inside a -r file may pin: what
+                # this line leaves installed isn't known.
+                earlier.pop(key, None)
+            elif install.upgrade or pin is not None or any(pkg.skip is not None for pkg in pkgs) or before is None:
                 # Upgraded, pinned (installed as written), a URL or path, or new here: this line's.
-                after.setdefault(key, (number, label, pkg.version))
-            elif not _satisfies(before[2], pkg.spec):
-                after.setdefault(key, (number, label, None))  # the earlier pin is replaced by the newest match
+                earlier[key] = (number, entries[0][2], pin)
+            elif not all(_satisfies(before[2], pkg.spec) for pkg in pkgs):
+                earlier[key] = (number, entries[0][2], None)  # the earlier pin is replaced by the newest match
             else:
-                if may_note and pkg.key not in noted:
-                    noted.add(pkg.key)
-                    report.notes.append(
-                        (
-                            number,
-                            "kept-version",
-                            f"{pkg.name} is already installed by line {before[0]} ({before[1]}); {tool} keeps "
-                            f"that version if it satisfies {where}, and wheelgap checked the newest release",
-                        )
+                report.notes.append(
+                    (
+                        number,
+                        "kept-version",
+                        f"{pkgs[0].name} is already installed by line {before[0]} ({before[1]}); {tool} keeps that "
+                        f"version if it satisfies {entries[0][1]}, and wheelgap checked the newest release",
                     )
-                after.setdefault(key, before)
-        earlier.update(after)
+                )
 
     def read_install(install: _Install) -> None:
         if run_error:

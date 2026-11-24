@@ -2720,7 +2720,7 @@ def _kept_notes(tmp_path, dockerfile, texts):
     for name, text in texts.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
     report = InputsReport()
-    dockerfile_requirements(path, report=report)
+    dockerfile_requirements(path, report=report, uv_installs=set(), line_files={}, constraints={})
     return [(line, message) for line, kind, message in report.notes if kind == "kept-version"]
 
 
@@ -2777,6 +2777,65 @@ def test_dockerfile_inputs_no_kept_version_note_for_a_name_beside_a_requirements
     )
     texts = {"base.txt": "numpy==2.1.0\n", "app.txt": "-c c.txt\npurewheel==3.1\n", "c.txt": "numpy==2.5.5\n"}
     assert _kept_notes(tmp_path, dockerfile, texts) == []
+
+
+_THREE = "FROM python:3.13\nWORKDIR /app\nCOPY {} ./\nRUN pip install -r base.txt\n"
+
+
+@pytest.mark.parametrize(
+    ("files", "body", "texts"),
+    [
+        # A pin anywhere on the line decides: pip installs 2.3.0 for `numpy>=2` and `numpy==2.3.0` together.
+        ("base.txt app.txt", "RUN pip install -r app.txt numpy==2.3.0\n", {"app.txt": "numpy>=2\n"}),
+        (
+            "base.txt app.txt pin.txt",
+            "RUN pip install -r app.txt -r pin.txt\n",
+            {"app.txt": "numpy>=2\n", "pin.txt": "numpy==2.3.0\n"},
+        ),
+        # A middle line whose requirement has a marker (2.5.5 on Python 3.10 and later) leaves what's installed
+        # unknown, so line 6 names no earlier line.
+        (
+            "base.txt mid.txt app.txt",
+            "RUN pip install -r mid.txt\nRUN pip install -r app.txt\n",
+            {"mid.txt": "numpy==2.5.5; python_version >= '3.10'\n", "app.txt": "numpy>=1\n"},
+        ),
+        # So does an unpinned name beside a -r file whose -c line pins it (pip installs 2.5.5).
+        (
+            "base.txt mid.txt c.txt app.txt",
+            "RUN pip install -r mid.txt numpy\nRUN pip install -r app.txt\n",
+            {"mid.txt": "-c c.txt\npurewheel==3.1\n", "c.txt": "numpy==2.5.5\n", "app.txt": "numpy>=1\n"},
+        ),
+        # pip installs a lock's own versions over what is there (pip 26.3 uninstalls the earlier one).
+        (
+            "base.txt pylock.toml app.txt",
+            "RUN pip install -r pylock.toml\nRUN pip install -r app.txt\n",
+            {
+                "pylock.toml": 'lock-version = "1.0"\ncreated-by = "pip"\n\n[[packages]]\nname = "numpy"\n'
+                'version = "2.5.5"\n',
+                "app.txt": "numpy>=1\n",
+            },
+        ),
+    ],
+)
+def test_dockerfile_inputs_no_kept_version_note_when_pip_replaces_it(tmp_path, files, body, texts):
+    texts = {"base.txt": "numpy==2.1.0\n", **texts}
+    assert _kept_notes(tmp_path, _THREE.format(files) + body, texts) == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # uv's --system passes over a venv's Python on the PATH and installs for the image's own (uv 0.13.1).
+        "RUN python -m venv /venv\nENV PATH=/venv/bin:$PATH\nRUN uv pip install --system -r base.txt\n"
+        "RUN pip install -r app.txt\n",
+        # --clear empties the venv.
+        "RUN python -m venv /venv\nRUN /venv/bin/pip install -r base.txt\nRUN python -m venv --clear /venv\n"
+        "RUN /venv/bin/pip install -r app.txt\n",
+    ],
+)
+def test_dockerfile_inputs_no_kept_version_note_in_an_emptied_or_other_environment(tmp_path, body):
+    texts = {"base.txt": "numpy==2.1.0\n", "app.txt": "numpy>=2\n"}
+    assert _kept_notes(tmp_path, _KEPT_HEAD + body, texts) == []
 
 
 @pytest.mark.parametrize(

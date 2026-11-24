@@ -125,7 +125,9 @@ files or by name (`Dockerfile:5: numpy is already installed by line 4 (base.txt)
 satisfies app.txt, and wheelgap checked the newest release`). The later requirement counts when it is in a `-r`
 file, or named on a line with no `-r` file (a `-c` line inside one may pin the names beside it). The note names the
 line that put the version there last, and there is none when the earlier line's pin doesn't satisfy the later range
-(pip then installs the newest match, which is what was checked) or when the requirement has an environment marker.
+(pip then installs the newest match, which is what was checked) or when the requirement has an environment marker. It
+can't see an upgrade made as a dependency of another package, by a project script or by a `COPY` in between, so it
+says "if it satisfies".
 
 **Why a line before the install stops, and one after it doesn't.** A line wheelgap can't see into before an install it
 reads may change what that install fetches: rewrite the requirements file, write a pip config file, export
