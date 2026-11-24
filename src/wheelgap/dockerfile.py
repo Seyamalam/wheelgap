@@ -3676,32 +3676,35 @@ def _dockerfile_requirements(
     installs_read: list[tuple[int, int]] = []  # (line, how many InputsReport.scripts come before it) per install read
 
     def kept_versions(install: _Install, constraint_paths: tuple[Path, ...], hosts: tuple[Path, ...]) -> None:
-        """Note each unpinned requirement of the install's -r files that an earlier install in the same environment
-        already put there. Without --upgrade, pip and uv keep an installed version that satisfies the requirement
-        (pip 26.3 and uv 0.13: `Requirement already satisfied`), so the build may never fetch the newest release
-        wheelgap checks. Then remember what this install leaves installed."""
+        """Note each unpinned requirement of the install (in its -r files, or named on the line) that an earlier
+        install in the same environment already put there. Without --upgrade, pip and uv keep an installed version
+        that satisfies the requirement (pip 26.3 and uv 0.13: `Requirement already satisfied`), so the build may
+        never fetch the newest release wheelgap checks. Then remember what this install leaves installed."""
         tool = "uv pip" if install.uv else "pip"
-        own: list[tuple[Package, str, bool]] = [  # (package, where it is required, whether a -r file requires it)
-            (pkg, pkg.origin or host.name, True)
+        # (package, where it is required, what an earlier-install note calls it, whether a note may name it)
+        own: list[tuple[Package, str, str, bool]] = [
+            (pkg, pkg.origin or host.name, pkg.origin or host.name, True)
             for host in hosts
             if install.uv or not _PIP_PYLOCK_NAME_RE.fullmatch(host.name)  # a pylock is a lock, not requirements
             for pkg in parse_requirements(host, constraint_paths, hosts).packages
         ]
-        own += [(requirement_to_package(name, ""), f"{name} on the command line", False) for name in install.names]
+        # A name beside -r files also gets the -c lines inside them (sources.parse_named_requirements), which may pin
+        # it: noted only on a line that names packages alone.
+        own += [(requirement_to_package(name, ""), name, f"{tool} install {name}", not hosts) for name in install.names]
         noted: set[str] = set()
         after: dict[tuple[str | None, str], tuple[int, str, str | None]] = {}
-        for pkg, where, from_file in own:
+        for pkg, where, label, may_note in own:
             if pkg.markers:
                 continue  # whether it is installed at all depends on the target, which isn't known here
             key = (install.env, pkg.key)
             before = earlier.get(key)
             if install.upgrade or pkg.version is not None or pkg.skip is not None or before is None:
                 # Upgraded, pinned (installed as written), a URL or path, or new here: this line's.
-                after.setdefault(key, (number, where, pkg.version))
+                after.setdefault(key, (number, label, pkg.version))
             elif not _satisfies(before[2], pkg.spec):
-                after.setdefault(key, (number, where, None))  # the earlier pin is replaced by the newest match
+                after.setdefault(key, (number, label, None))  # the earlier pin is replaced by the newest match
             else:
-                if from_file and pkg.key not in noted:
+                if may_note and pkg.key not in noted:
                     noted.add(pkg.key)
                     report.notes.append(
                         (
