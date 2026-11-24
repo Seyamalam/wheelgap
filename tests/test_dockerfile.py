@@ -2651,6 +2651,48 @@ def test_dockerfile_inputs_notes_a_version_pip_keeps(tmp_path):
     ]
 
 
+def test_dockerfile_inputs_notes_a_version_a_named_install_keeps(tmp_path):
+    """#636: a package an earlier line names directly installs it just as a -r file does, so the note names the
+    requirement it ran with."""
+    path = _context(
+        tmp_path,
+        "FROM python:3.13\nWORKDIR /app\nCOPY app.txt ./\nRUN pip install numpy==2.1.0\nRUN pip install -r app.txt\n",
+        ["app.txt"],
+    )
+    (tmp_path / "app.txt").write_text("numpy>=2\n", encoding="utf-8")
+    report = InputsReport()
+    dockerfile_requirements(path, report=report)
+    assert report.notes == [
+        (
+            5,
+            "kept-version",
+            "numpy is already installed by line 4 (pip install numpy==2.1.0); pip keeps that version if it "
+            "satisfies app.txt, and wheelgap checked the newest release",
+        )
+    ]
+
+
+def test_dockerfile_inputs_notes_a_version_a_named_requirement_keeps(tmp_path):
+    """#636: an unpinned requirement named on a later line repeats an earlier install the same way one in a -r
+    file does."""
+    path = _context(
+        tmp_path,
+        'FROM python:3.13\nWORKDIR /app\nCOPY base.txt ./\nRUN pip install -r base.txt\nRUN pip install "numpy>=2"\n',
+        ["base.txt"],
+    )
+    (tmp_path / "base.txt").write_text("numpy==2.1.0\n", encoding="utf-8")
+    report = InputsReport()
+    dockerfile_requirements(path, report=report)
+    assert report.notes == [
+        (
+            5,
+            "kept-version",
+            "numpy is already installed by line 4 (base.txt); pip keeps that version if it satisfies "
+            "numpy>=2, and wheelgap checked the newest release",
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     ("run", "app_req"),
     [

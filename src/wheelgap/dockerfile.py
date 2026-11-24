@@ -3803,16 +3803,19 @@ def _dockerfile_requirements(
             found.setdefault(host, number)
         # pip and uv keep a package that is already in the image when it satisfies the requirement; without
         # --upgrade the build never fetches the newest release wheelgap checks, so when a later install asks
-        # again for one an earlier line installs, and doesn't pin it, say whose answer that is.
+        # again for one an earlier line installs, and doesn't pin it, say whose answer that is. A package named
+        # on the line itself (`pip install numpy==2.1.0`) installs it just as a -r file does, both ways.
         own = [
             (pkg, host)
             for host in hosts
             if uv or not _PIP_PYLOCK_NAME_RE.fullmatch(host.name)  # a pylock is a lock, not requirements text
             for pkg in parse_requirements(host, constraint_paths, hosts).packages
         ]
+        tool = "uv pip" if uv else "pip"
+        asks = [(pkg, pkg.origin or host.name) for pkg, host in own]
+        asks += [(requirement_to_package(name, ""), name) for name in install.names]
         if not install.upgrade:
-            tool = "uv pip" if uv else "pip"
-            for pkg, host in own:
+            for pkg, what in asks:
                 if pkg.version is None and (before := earlier.get(pkg.key)) is not None:
                     line, earlier_file = before
                     report.notes.append(
@@ -3820,12 +3823,13 @@ def _dockerfile_requirements(
                             number,
                             "kept-version",
                             f"{pkg.name} is already installed by line {line} ({earlier_file}); {tool} keeps "
-                            f"that version if it satisfies {pkg.origin or host.name}, and wheelgap checked "
-                            "the newest release",
+                            f"that version if it satisfies {what}, and wheelgap checked the newest release",
                         )
                     )
         for pkg, host in own:
             earlier.setdefault(pkg.key, (number, pkg.origin or host.name))
+        for name in install.names:
+            earlier.setdefault(requirement_to_package(name, "").key, (number, f"{tool} install {name}"))
         for glob in install.globs:
             check_glob(glob, install)
         if install.names:
