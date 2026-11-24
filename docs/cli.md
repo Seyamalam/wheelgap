@@ -117,10 +117,14 @@ When no install line is left to read, that is an error too, and it names the lin
 **Each install is checked as a fresh one.** wheelgap answers for the newest release each requirement allows,
 as pip or uv would install into an empty environment. Without `--upgrade`, the installer keeps a version that is
 already in the image and satisfies the requirement — from the base image, a system package, or an earlier `RUN` —
-so a build may keep an older release than the one checked, and a `wheelgap: note:` says so when a later install's
-`-r` file requires, unpinned and without `--upgrade`, a package an earlier line installs (`Dockerfile:5: numpy is
-already installed by line 4 (base.txt); pip keeps that version if it satisfies app.txt, and wheelgap checked the
-newest release`). For pinned requirements the model makes no difference: the pin is checked as written.
+so a build may keep an older release than the one checked. For pinned requirements this makes no difference: the
+pin is checked as written. **After 0.14.0**, a `wheelgap: note:` (kind `kept-version` in `--json`'s
+[`dockerfile_notes`](output.md#json)) says so when a later install's `-r` file requires, unpinned and without
+`--upgrade`, a package an earlier install line put in the same environment (the image's Python, or the same venv),
+from its `-r` files or by name (`Dockerfile:5: numpy is already installed by line 4 (base.txt); pip keeps that
+version if it satisfies app.txt, and wheelgap checked the newest release`). It names the line that installed the
+version there now, and there is none when the earlier line's pin doesn't satisfy the later range (pip then installs
+the newest match, which is what was checked) or when the requirement has an environment marker.
 
 **Why a line before the install stops, and one after it doesn't.** A line wheelgap can't see into before an install it
 reads may change what that install fetches: rewrite the requirements file, write a pip config file, export

@@ -18,10 +18,13 @@ from pathlib import Path
 from typing import NoReturn
 
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
 
 from . import dockerignore
 from .sources import (
     _COMMENT_RE,
+    Package,
     SourceError,
     _abbreviated_include,
     _join_continued_lines,
@@ -2379,6 +2382,7 @@ class _Install:
     created: int = 0  # how many of the reader's `created` come before it
     no_deps: bool = False
     upgrade: bool = False  # --upgrade/-U, which replaces a version already in the image
+    env: str | None = None  # the venv it installs into (a `python -m venv` folder), or None for the image's Python
     scripts: int = 0  # how many commands that run the project's own scripts come before it (InputsReport.scripts)
 
 
@@ -2969,7 +2973,7 @@ class _RunReader:
             return "warning", f"`{shown}`, a script or program at a path"
         args = words[1:]
         if _PIP_RE.fullmatch(base):
-            return self._pip(number, args, False, uv_system, shown, stop)
+            return self._into(self._pip(number, args, False, uv_system, shown, stop), self._environment(name, cwd))
         if _PYTHON_RE.fullmatch(base):
             while args and args[0].text in ("-u", "-B", "-E", "-s", "-I"):
                 args = args[1:]
@@ -2985,9 +2989,9 @@ class _RunReader:
                     kind, detail = self._pip(number, rest, False, uv_system, shown, stop)
                     if isinstance(detail, _Install):
                         detail.module = True
-                    return kind, detail
+                    return self._into((kind, detail), self._environment(name, cwd))
                 if module == "uv":
-                    return self._uv(number, rest, uv_system, shown, stop)
+                    return self._into(self._uv(number, rest, uv_system, shown, stop), self._environment(name, cwd))
                 if module in ("venv", "virtualenv"):
                     folders = [word for word in rest if not word.text.startswith("-")]
                     if len(folders) == 1 and folders[0].exact and (cwd is not None or folders[0].text.startswith("/")):
@@ -3010,7 +3014,7 @@ class _RunReader:
         if base == "uv":
             if self.path is not None:  # uv pip install --system installs for the first Python on the PATH
                 self._python("python", "python", cwd, shown, stop)
-            return self._uv(number, args, uv_system, shown, stop)
+            return self._into(self._uv(number, args, uv_system, shown, stop), self._environment("python", cwd))
         if base in _INSTALLERS:
             if [word.text for word in args] in (["--version"], ["-V"], ["--help"]):
                 return "shell", ""
@@ -3044,6 +3048,22 @@ class _RunReader:
         if base in _PROGRAMS:
             return "programs", base
         return "warning", f"`{shown}`, a program wheelgap doesn't know"
+
+    def _environment(self, name: str, cwd: str | None) -> str | None:
+        """The venv a pip, python or uv command (`name` as written) installs into, or None for the image's own Python,
+        as _python reads it: a venv's bin/NAME, else the venv whose bin the PATH puts first."""
+        if "/" in name:
+            folder = posixpath.dirname(posixpath.dirname(posixpath.normpath(posixpath.join(cwd or "/", name))))
+            return folder if posixpath.basename(posixpath.dirname(name)) == "bin" and folder in self.venvs else None
+        return self.path[1] if self.path is not None and self.path[0] == "venv" else None
+
+    @staticmethod
+    def _into(classified: tuple[str, object], env: str | None) -> tuple[str, object]:
+        """`classified`, with the environment set on an install."""
+        kind, detail = classified
+        if isinstance(detail, _Install):
+            detail.env = env
+        return kind, detail
 
     def _uv(self, number, args, uv_system, shown, stop):  # type: ignore[no-untyped-def]
         texts = [word.text for word in args]
@@ -3458,6 +3478,17 @@ def dockerfile_requirements(
         raise DockerfileError(f"{path}: {e}") from None
 
 
+def _satisfies(pin: str | None, spec: str | None) -> bool:
+    """Whether an installed release `pin` (None: not known) may satisfy the range `spec` (None: any release), as pip
+    checks an installed version: pre-releases included."""
+    if pin is None or not spec:
+        return True
+    try:
+        return SpecifierSet(spec).contains(Version(pin), prereleases=True)
+    except (InvalidSpecifier, InvalidVersion):
+        return True
+
+
 def _dockerfile_requirements(
     text: str,
     context: Path,
@@ -3543,7 +3574,9 @@ def _dockerfile_requirements(
     used_constraints: dict[Path, tuple[Path, ...]] = {}
     used_line_files: dict[Path, tuple[Path, ...]] = {}
     installed_by_uv: dict[Path, bool] = {}
-    earlier: dict[str, tuple[int, str]] = {}  # package key -> (line, file) an earlier install already requires
+    # (venv or None, package key) -> (line, file, pin or None) of the install that put the package there: what a
+    # later install in the same environment finds already installed.
+    earlier: dict[tuple[str | None, str], tuple[int, str, str | None]] = {}
 
     def copied_requirements(file: str, option: str, uv: bool, install: _Install) -> Path:
         """The file in the build context that `-r FILE` or `-c FILE` on the RUN at `number` reads in the image, for
@@ -3641,6 +3674,45 @@ def _dockerfile_requirements(
     global_defaults = global_args.defaults if not global_args.unreadable else {}
 
     installs_read: list[tuple[int, int]] = []  # (line, how many InputsReport.scripts come before it) per install read
+
+    def kept_versions(install: _Install, constraint_paths: tuple[Path, ...], hosts: tuple[Path, ...]) -> None:
+        """Note each unpinned requirement of the install's -r files that an earlier install in the same environment
+        already put there. Without --upgrade, pip and uv keep an installed version that satisfies the requirement
+        (pip 26.3 and uv 0.13: `Requirement already satisfied`), so the build may never fetch the newest release
+        wheelgap checks. Then remember what this install leaves installed."""
+        tool = "uv pip" if install.uv else "pip"
+        own: list[tuple[Package, str, bool]] = [  # (package, where it is required, whether a -r file requires it)
+            (pkg, pkg.origin or host.name, True)
+            for host in hosts
+            if install.uv or not _PIP_PYLOCK_NAME_RE.fullmatch(host.name)  # a pylock is a lock, not requirements
+            for pkg in parse_requirements(host, constraint_paths, hosts).packages
+        ]
+        own += [(requirement_to_package(name, ""), f"{name} on the command line", False) for name in install.names]
+        noted: set[str] = set()
+        after: dict[tuple[str | None, str], tuple[int, str, str | None]] = {}
+        for pkg, where, from_file in own:
+            if pkg.markers:
+                continue  # whether it is installed at all depends on the target, which isn't known here
+            key = (install.env, pkg.key)
+            before = earlier.get(key)
+            if install.upgrade or pkg.version is not None or pkg.skip is not None or before is None:
+                # Upgraded, pinned (installed as written), a URL or path, or new here: this line's.
+                after.setdefault(key, (number, where, pkg.version))
+            elif not _satisfies(before[2], pkg.spec):
+                after.setdefault(key, (number, where, None))  # the earlier pin is replaced by the newest match
+            else:
+                if from_file and pkg.key not in noted:
+                    noted.add(pkg.key)
+                    report.notes.append(
+                        (
+                            number,
+                            "kept-version",
+                            f"{pkg.name} is already installed by line {before[0]} ({before[1]}); {tool} keeps "
+                            f"that version if it satisfies {where}, and wheelgap checked the newest release",
+                        )
+                    )
+                after.setdefault(key, before)
+        earlier.update(after)
 
     def read_install(install: _Install) -> None:
         if run_error:
@@ -3801,31 +3873,6 @@ def _dockerfile_requirements(
             used_constraints[host] = constraint_paths
             used_line_files.setdefault(host, hosts)
             found.setdefault(host, number)
-        # pip and uv keep a package that is already in the image when it satisfies the requirement; without
-        # --upgrade the build never fetches the newest release wheelgap checks, so when a later install asks
-        # again for one an earlier line installs, and doesn't pin it, say whose answer that is.
-        own = [
-            (pkg, host)
-            for host in hosts
-            if uv or not _PIP_PYLOCK_NAME_RE.fullmatch(host.name)  # a pylock is a lock, not requirements text
-            for pkg in parse_requirements(host, constraint_paths, hosts).packages
-        ]
-        if not install.upgrade:
-            tool = "uv pip" if uv else "pip"
-            for pkg, host in own:
-                if pkg.version is None and (before := earlier.get(pkg.key)) is not None:
-                    line, earlier_file = before
-                    report.notes.append(
-                        (
-                            number,
-                            "kept-version",
-                            f"{pkg.name} is already installed by line {line} ({earlier_file}); {tool} keeps "
-                            f"that version if it satisfies {pkg.origin or host.name}, and wheelgap checked "
-                            "the newest release",
-                        )
-                    )
-        for pkg, host in own:
-            earlier.setdefault(pkg.key, (number, pkg.origin or host.name))
         for glob in install.globs:
             check_glob(glob, install)
         if install.names:
@@ -3857,6 +3904,7 @@ def _dockerfile_requirements(
             else:
                 report.named.append((number, list(install.names), uv))
                 report.named_files.append(files)
+        kept_versions(install, constraint_paths, hosts)
         # An unread COPY or ADD before the one that copies FILE may still put a pip config file in the image.
         if unread := next((copy for copy in copies if copy.error), None):
             raise DockerfileError(f"line {unread.line}: {unread.error}")

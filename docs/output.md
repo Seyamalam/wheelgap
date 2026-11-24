@@ -537,8 +537,10 @@ The kinds: `image-not-read` (`-p` and `-t` stood in for an [image wheelgap can't
 `passed-over:CLASS`, one per class of `RUN` line [`--dockerfile-inputs`](cli.md#dockerfile-inputs) didn't read
 because it installs no Python packages with pip or uv (`system-packages`, `shell`, `programs`, `venv`,
 `cache-mounts`, `copy-from`, `installer-tools`), with `line` `null` and the line numbers in `lines`; `arg-unset` (an
-`ARG PIP_...` with no default, read as unset); and `system-python-packages` (system package commands on `lines`
-install Python packages, which pip may keep instead of fetching a requirement). The key is absent when there is
+`ARG PIP_...` with no default, read as unset); `system-python-packages` (system package commands on `lines`
+install Python packages, which pip may keep instead of fetching a requirement); and, after 0.14.0, `kept-version`
+(an unpinned requirement of the install on `line` that an earlier install line already put in the image, which pip
+keeps if it satisfies the requirement). The key is absent when there is
 nothing to say.
 
 `dockerfile_packages` has one entry per `RUN` line whose `pip install` names requirements on the
