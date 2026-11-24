@@ -262,8 +262,10 @@ locks, scripts or projects), an option line other than a plain `-r FILE` or `-c 
 (`--extra-index-url`, `--index-url`, `--no-binary`, `--only-binary`, `--pre`, `-e`: uv reads these by its own rules,
 and with a second index it takes the first one that has the package, where pip takes the best file of them all; a
 requirement with its own `--hash` is fine), a `-r` inside a constraints file (pip installs what it names, uv only
-constrains with it), a `uv.toml` or `pyproject.toml` copied into the image before the uv line (uv reads settings
-from them: copy the requirements file alone and run `uv pip install` before the `COPY` that brings them), a file
+constrains with it), a `uv.toml` or `pyproject.toml` the image's `uv pip install` would read settings from: a
+non-empty `uv.toml` a `COPY` brings before the uv line, or a `pyproject.toml` with a `[tool.uv]` table (a plain
+`pyproject.toml` — `COPY . .` brings one for nearly every project — is fine, as is a `uv.toml` that sets nothing;
+a file that isn't valid TOML or isn't UTF-8 is refused, naming it), a file
 that pip installs on one line and uv on another, and every other `uv` command (`uv sync`, `uv add`, `uv pip sync`).
 
 A `.dockerignore` is read as BuildKit reads it (0.13.0 refuses any project that has one):

@@ -10,6 +10,7 @@ import posixpath
 import re
 import shlex
 import sys
+import tomllib
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -1431,6 +1432,72 @@ def _copies_config(
         elif any(posixpath.basename(name).lower() in names for name in (rel, copy.dest)):
             return True
     return names == _PIP_CONFIG_NAMES and (copy.dest + "/").startswith(_PIP_CONFIG)
+
+
+def _uv_config_files(copy: _Copy, context: Path, ignore_rules: tuple[dockerignore.Rule, ...]) -> list[tuple[str, Path]]:
+    """Each uv.toml or pyproject.toml a COPY brings into the image, as (the name it lands with, its path on disk)."""
+    found: list[tuple[str, Path]] = []
+    for rel, host, is_dir in copy.sources:
+        if is_dir:
+            for dirpath, dirnames, filenames in os.walk(host):
+                if not ignore_rules:
+                    for name in sorted((*dirnames, *filenames)):
+                        if name.lower() in _UV_CONFIG_NAMES:
+                            found.append((name, Path(dirpath) / name))
+                    continue
+                rel_dir = Path(dirpath).relative_to(context).as_posix()
+                prefix = "" if rel_dir == "." else f"{rel_dir}/"
+                for name in sorted(filenames):
+                    if name.lower() in _UV_CONFIG_NAMES and not dockerignore.ignored(f"{prefix}{name}", ignore_rules):
+                        found.append((name, Path(dirpath) / name))
+                kept: list[str] = []
+                for dirname in sorted(dirnames):
+                    entry_rel = f"{prefix}{dirname}"
+                    if dirname.lower() in _UV_CONFIG_NAMES and not dockerignore.ignored(entry_rel, ignore_rules):
+                        found.append((dirname, Path(dirpath) / dirname))
+                    if not dockerignore.pruned(entry_rel, ignore_rules):
+                        kept.append(dirname)
+                dirnames[:] = kept
+        # Not knowing whether dest is a folder in the image, either name may be the one the file gets.
+        elif any(posixpath.basename(name).lower() in _UV_CONFIG_NAMES for name in (rel, copy.dest)):
+            base = posixpath.basename(copy.dest)
+            found.append((base if base.lower() in _UV_CONFIG_NAMES else posixpath.basename(rel), host))
+    return found
+
+
+def _uv_config_reason(path: Path, name: str) -> str | None:
+    """Why the uv.toml or pyproject.toml `path` (landing as `name` in the image) makes `uv pip install` unreadable:
+    any key under a pyproject.toml's [tool.uv] table (uv reads settings from it) or a non-empty uv.toml. None when
+    uv reads nothing from the file."""
+    try:
+        text = path.read_bytes().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return f"{name}, which isn't UTF-8"
+    except OSError:
+        return f"{name}, which can't be read"
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return f"{name}, which isn't valid TOML: {exc}"
+    if name == "uv.toml":
+        return f"{name}, which uv reads for uv pip install" if data else None
+    tool = data.get("tool")
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    return f"{name}, whose [tool.uv] table uv reads for uv pip install" if uv else None
+
+
+def _copies_uv_config(copy: _Copy, context: Path, ignore_rules: tuple[dockerignore.Rule, ...]) -> str | None:
+    """Why `uv pip install` after `copy` can't be read, or None when it brings no uv settings."""
+    if copy.foreign is not None:
+        return (
+            f"COPY --from={copy.foreign} may bring a uv.toml or pyproject.toml, which uv reads settings from, and "
+            "--dockerfile-inputs doesn't follow files copied from another stage or image: run uv pip install "
+            "before this COPY"
+        )
+    for name, host in _uv_config_files(copy, context, ignore_rules):
+        if why := _uv_config_reason(host, name):
+            return f"this COPY brings {why}"
+    return None
 
 
 # Folders of the base image's own file tree, whose contents a Dockerfile doesn't show.
@@ -3623,20 +3690,13 @@ def _dockerfile_requirements(
             )
         uv = install.uv
         if uv and (
-            config := next(
-                (copy for copy in copies if _copies_config(copy, _UV_CONFIG_NAMES, context, ignore_rules)), None
+            refused := next(
+                ((copy, why) for copy in copies if (why := _copies_uv_config(copy, context, ignore_rules)) is not None),
+                None,
             )
         ):
-            if config.foreign is not None:
-                raise DockerfileError(
-                    f"line {config.line}: COPY --from={config.foreign} may bring a uv.toml or pyproject.toml, which "
-                    "uv reads settings from, and --dockerfile-inputs doesn't follow files copied from another "
-                    "stage or image: run uv pip install before this COPY"
-                )
-            raise DockerfileError(
-                f"line {config.line}: this COPY puts a uv.toml or pyproject.toml in the image, and uv reads "
-                "settings from them: copy the requirements file alone and run uv pip install before this COPY"
-            )
+            copy, why = refused
+            raise DockerfileError(f"line {copy.line}: {why}")
         if uv and dependencies:
             # A dependency is a range, resolved here by pip's rules (see the pins asked for below).
             raise DockerfileError(

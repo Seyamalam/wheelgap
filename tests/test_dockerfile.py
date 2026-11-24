@@ -1359,11 +1359,12 @@ def test_dockerfile_requirements_dockerignore_skips_ignored_uv_config(tmp_path, 
         ["requirements.txt"],
     )
     (tmp_path / "requirements.txt").write_text("purewheel==3.1\n", encoding="utf-8")
-    (tmp_path / config_name).write_text("", encoding="utf-8")
+    content = "[tool.uv]\n" if config_name == "pyproject.toml" else ""
+    (tmp_path / config_name).write_text(f"{content}no-binary = true\n", encoding="utf-8")
 
     with pytest.raises(
         DockerfileError,
-        match=rf"^{re.escape(str(path))}:3: this COPY puts a uv\.toml or pyproject\.toml in the image",
+        match=rf"^{re.escape(str(path))}:3: this COPY brings {config_name}",
     ):
         dockerfile_requirements(path, uv_installs=set())
 
@@ -2472,8 +2473,7 @@ def test_cli_dockerfile_inputs_reads_uv_pip_system_install(tmp_path, capsys, fak
         (
             "COPY . ./",
             "uv pip install --system -r requirements.txt",
-            ":3: this COPY puts a uv.toml or pyproject.toml in the image, and uv reads settings from them: "
-            "copy the requirements file alone and run uv pip install before this COPY",
+            ":3: this COPY brings uv.toml, which uv reads for uv pip install",
         ),
         ("COPY --from=ghcr.io/astral-sh/uv /other /bin/", "uv pip install --system -r requirements.txt", ":3: COPY"),
         ("COPY --from=other /uv /bin/", "uv pip install --system -r requirements.txt", ":3: COPY"),
@@ -2495,6 +2495,58 @@ def test_dockerfile_inputs_refuses_unsupported_uv_installs(tmp_path, copy, run, 
     (tmp_path / "uv.toml").write_text("no-binary = true\n", encoding="utf-8")
     with pytest.raises(DockerfileError, match=message):
         dockerfile_requirements(path)
+
+
+_UV_COPY_RUN = "FROM python:3.13\nWORKDIR /app\nCOPY . ./\nRUN uv pip install --system -r requirements.txt\n"
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "message"),
+    [
+        # A pyproject.toml with no [tool.uv] table, and an empty uv.toml, hold no settings uv reads.
+        ("pyproject.toml", '[project]\nname = "app"\nversion = "0"\n', None),
+        ("pyproject.toml", "[tool.ruff]\nline-length = 120\n[dependency-groups]\ndev = []\n", None),
+        ("pyproject.toml", "[tool.uv]\n", None),  # an empty [tool.uv] table sets nothing
+        ("uv.toml", "", None),
+        ("uv.toml", "# nothing set\n", None),
+        ("uv.toml", "no-binary = true\n", ":3: this COPY brings uv.toml, which uv reads for uv pip install"),
+        ("pyproject.toml", '[tool.uv]\nprerelease = "allow"\n', ":3: .*brings pyproject.toml, whose \\[tool.uv\\]"),
+        ("pyproject.toml", '[tool.uv.pip]\nprerelease = "allow"\n', ":3: .*brings pyproject.toml, whose \\[tool.uv\\]"),
+        ("pyproject.toml", '[[tool.uv.index]]\nurl = "https://e.test"\n', ":3: .*whose \\[tool.uv\\] table"),
+        ("sub/pyproject.toml", "[tool.uv]\nno-binary = true\n", ":3: .*brings pyproject.toml"),
+        ("pyproject.toml", "[project\n", ":3: this COPY brings pyproject.toml, which isn't valid TOML"),
+        ("uv.toml", "no-binary = [\n", ":3: this COPY brings uv.toml, which isn't valid TOML"),
+    ],
+)
+def test_dockerfile_inputs_uv_install_reads_the_configs_a_copy_brings(tmp_path, filename, content, message):
+    path = _context(tmp_path, _UV_COPY_RUN, files=("requirements.txt", filename))
+    (tmp_path / filename).write_text(content, encoding="utf-8")
+    if message is None:
+        assert dockerfile_requirements(path, uv_installs=set()) == [(4, tmp_path / "requirements.txt")]
+    else:
+        with pytest.raises(DockerfileError, match=message):
+            dockerfile_requirements(path)
+
+
+def test_dockerfile_inputs_uv_install_under_copy_dot(tmp_path):
+    """#641's example: COPY . . with a pyproject.toml that holds no uv settings reads the install like one that
+    copies requirements.txt alone."""
+    requirements = tmp_path / "requirements.txt"
+    path = _context(
+        tmp_path,
+        "FROM python:3.13-slim\n"
+        "COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/\n"
+        "WORKDIR /app\nCOPY . .\nRUN uv pip install --system -r requirements.txt\n",
+    )
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "app"\nversion = "0"\n', encoding="utf-8")
+    assert dockerfile_requirements(path, uv_installs=set()) == [(5, requirements)]
+    alone = _context(
+        tmp_path,
+        "FROM python:3.13-slim\n"
+        "COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/\n"
+        "WORKDIR /app\nCOPY requirements.txt .\nRUN uv pip install --system -r requirements.txt\n",
+    )
+    assert dockerfile_requirements(alone, uv_installs=set()) == [(5, requirements)]
 
 
 def test_cli_dockerfile_inputs_checks_a_uv_install_as_uv_installs_it(tmp_path, capsys, fake_pypi, monkeypatch):
