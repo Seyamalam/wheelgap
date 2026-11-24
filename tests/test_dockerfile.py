@@ -2532,33 +2532,68 @@ def test_dockerfile_inputs_uv_install_reads_the_configs_a_copy_brings(tmp_path, 
 
 
 @pytest.mark.parametrize(
-    ("copy", "content", "message"),
+    ("copy", "filename", "content", "message"),
     [
-        ("COPY requirements.txt pyproject.toml ./", '[project]\nname = "app"\n', None),
+        ("COPY requirements.txt pyproject.toml ./", "pyproject.toml", '[project]\nname = "app"\n', None),
         (
             "COPY requirements.txt pyproject.toml ./",
+            "pyproject.toml",
             '[tool.uv]\nprerelease = "allow"\n',
             ":3: this COPY brings pyproject.toml, whose \\[tool.uv\\] table",
         ),
         # The file is read under the name it lands with.
-        ("COPY requirements.txt ./\nCOPY pyproject.toml /app/uv.toml", "", None),
+        ("COPY requirements.txt ./\nCOPY pyproject.toml /app/uv.toml", "pyproject.toml", "", None),
         (
             "COPY requirements.txt ./\nCOPY pyproject.toml /app/uv.toml",
+            "pyproject.toml",
             '[project]\nname = "app"\n',
             ":4: this COPY brings pyproject.toml as uv.toml, which uv reads for uv pip install",
         ),
+        # Into a folder, even one named pyproject.toml, the file keeps its own name.
+        (
+            "COPY requirements.txt ./\nCOPY uv.toml /app/pyproject.toml/",
+            "uv.toml",
+            "no-binary = true\n",
+            ":4: this COPY brings uv.toml, which uv reads for uv pip install",
+        ),
     ],
 )
-def test_dockerfile_inputs_uv_install_reads_a_copied_config_file(tmp_path, copy, content, message):
+def test_dockerfile_inputs_uv_install_reads_a_copied_config_file(tmp_path, copy, filename, content, message):
     path = _context(
         tmp_path, f"FROM python:3.13\nWORKDIR /app\n{copy}\nRUN uv pip install --system -r requirements.txt\n"
     )
-    (tmp_path / "pyproject.toml").write_text(content, encoding="utf-8")
+    (tmp_path / filename).write_text(content, encoding="utf-8")
     if message is None:
         assert dockerfile_requirements(path, uv_installs=set())[0][1] == tmp_path / "requirements.txt"
     else:
         with pytest.raises(DockerfileError, match=message):
             dockerfile_requirements(path)
+
+
+@pytest.mark.parametrize(
+    ("copy", "run"),
+    [
+        # With COPY . . now read, a cp can still write the [tool.uv] table the install reads.
+        ("COPY . .", "cp pyproject.docker.toml pyproject.toml"),
+        ("COPY requirements.txt .", "printf '[tool.uv]\\nprerelease = \"allow\"\\n' > pyproject.toml"),
+    ],
+)
+def test_dockerfile_inputs_uv_install_refuses_a_run_that_names_pyproject(tmp_path, copy, run):
+    path = _context(
+        tmp_path,
+        f"FROM python:3.13\nWORKDIR /app\n{copy}\nRUN {run}\nRUN uv pip install --system -r requirements.txt\n",
+        files=("requirements.txt", "pyproject.docker.toml"),
+    )
+    (tmp_path / "pyproject.docker.toml").write_text('[tool.uv]\nprerelease = "allow"\n', encoding="utf-8")
+    with pytest.raises(
+        DockerfileError, match=r":4: `.*` names pyproject\.toml, which may be a pyproject\.toml with a \[tool\.uv\]"
+    ):
+        dockerfile_requirements(path, uv_installs=set())
+    # pip reads no settings from a pyproject.toml: the same RUN before a pip install is read as before.
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("uv pip install --system", "pip install"), encoding="utf-8"
+    )
+    assert dockerfile_requirements(path) == [(5, tmp_path / "requirements.txt")]
 
 
 def test_dockerfile_inputs_uv_install_refuses_a_linked_config(tmp_path):

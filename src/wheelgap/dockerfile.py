@@ -1397,8 +1397,6 @@ def _copies_config(
 ) -> bool:
     """Whether COPY can put an installer configuration file anywhere in the image."""
     if copy.foreign is not None:
-        if names == _UV_CONFIG_NAMES:
-            return True  # a folder from elsewhere may hold a uv.toml or a pyproject.toml
         paths = (*copy.foreign_paths, copy.dest)
         return (
             any(_names_config(path) or posixpath.basename(path).lower() in names for path in paths)
@@ -1451,11 +1449,13 @@ def _uv_config_files(
                     if name.lower() in _UV_CONFIG_NAMES and not dockerignore.ignored(f"{prefix}{name}", ignore_rules):
                         found.append((f"{prefix}{name}", name, entry, entry.is_symlink()))
                 dirnames[:] = [d for d in sorted(dirnames) if not dockerignore.pruned(f"{prefix}{d}", ignore_rules)]
-        # Not knowing whether dest is a folder in the image, either name may be the one the file gets.
-        elif any(posixpath.basename(name).lower() in _UV_CONFIG_NAMES for name in (rel, copy.dest)):
-            base = posixpath.basename(copy.dest)
-            name = base if base.lower() in _UV_CONFIG_NAMES else posixpath.basename(rel)
-            found.append((rel if posixpath.basename(rel) == name else f"{rel} as {name}", name, host, False))
+        else:
+            # Into a folder the file keeps its name; otherwise, not knowing whether dest is a folder in the image,
+            # either name may be the one the file gets.
+            lands = [posixpath.basename(rel)] if copy.into else [posixpath.basename(copy.dest), posixpath.basename(rel)]
+            if landed := next((n for n in lands if n.lower() in _UV_CONFIG_NAMES), None):
+                shown = rel if posixpath.basename(rel) == landed else f"{rel} as {landed}"
+                found.append((shown, landed, host, False))
     return found
 
 
@@ -2472,6 +2472,8 @@ class _RunReader:
         # (line, word, folder) for each word of a command that wasn't read and may name a file it writes.
         self.mentions: list[tuple[int, str, str | None]] = []  # with the folder the command ran in, if known
         self.config_error: str | None = None  # a command that may have written a pip or uv config file
+        # A command that names a pyproject.toml, which may write the [tool.uv] table uv pip install reads (pip doesn't).
+        self.uv_config_error: str | None = None
         # (line, word, folder) for each word of a mkdir, touch, ln or install that wasn't read: names it may create.
         self.created: list[tuple[int, str, str | None]] = []
 
@@ -2734,6 +2736,11 @@ class _RunReader:
                         f"line {number}: `{' '.join(texts)[:60]}` names {text}, which may be a pip or uv config file"
                     )
                     break
+                if self.uv_config_error is None and "pyproject.toml" in text.lower():
+                    self.uv_config_error = (
+                        f"line {number}: `{' '.join(texts)[:60]}` names {text}, which may be a pyproject.toml with "
+                        "a [tool.uv] table uv pip install reads settings from"
+                    )
                 configured = _config_folder(folder) or folder in self.venvs or _within(folder, self.config_dirs)
                 if configured and not self._copies_no_config(words):
                     self.config_error = (
@@ -3631,6 +3638,8 @@ def _dockerfile_requirements(
             raise DockerfileError(run_error)
         if reader.config_error:
             raise DockerfileError(reader.config_error)
+        if install.uv and reader.uv_config_error:
+            raise DockerfileError(reader.uv_config_error)
         if install.no_deps and dependencies:
             tool = "uv pip" if install.uv else "pip"
             raise DockerfileError(
