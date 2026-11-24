@@ -25,7 +25,17 @@ from typing import ClassVar, Literal, overload
 from packaging.utils import canonicalize_name
 
 from . import origin, pypi
-from .check import Row, Status, check, explain, explain_lines, status_for, wheel_tags
+from .check import (
+    Row,
+    Status,
+    check,
+    check_lock_environments,
+    explain,
+    explain_lines,
+    narrow_to_lock_environments,
+    status_for,
+    wheel_tags,
+)
 from .deps import Resolver, pinned_complete, resolve_deps
 from .offline import require_offline
 from .pyodide import PyodideLock, bundled_version_differs, bundles, check_locks
@@ -40,6 +50,7 @@ from .sources import (
     file_kind,
     find_lockfile,
     load_file,
+    pyproject_group_names,
     pythons_outside_lock,
     restore_uv_python_files,
     select_pyproject_extras,
@@ -116,6 +127,8 @@ class Result:
     requires_python_rejected: dict[str, str] = field(default_factory=dict)
     no_binary: bool = False
     only_binary: bool = False
+    # Files of a pinned release whose sha256 hash was not listed in requirements, mapped to their --explain reason.
+    hash_rejected: dict[str, str] = field(default_factory=dict)
     # _result installs per-instance data; the immutable default is not a public dataclass field.
     _resolutions: ClassVar[Mapping[str, Package]] = MappingProxyType({})
     # Each applicable Pyodide lock may ship a different version for its Python.
@@ -154,6 +167,7 @@ class Result:
                 p.requires_python_rejected,
                 no_binary=self.no_binary,
                 only_binary=self.only_binary,
+                hash_rejected=p.hash_rejected,
             )
             for t, s in self.statuses.items()
             if s in _EXPLAINED
@@ -174,6 +188,7 @@ class Result:
                     requires_python_rejected=p.requires_python_rejected,
                     no_binary=self.no_binary,
                     only_binary=self.only_binary,
+                    hash_rejected=p.hash_rejected,
                 )
             )
             for t, s in self.statuses.items()
@@ -266,6 +281,7 @@ def _result(
         {f: why for variant in pkg.variants for f, why in variant.requires_python_rejected.items()},
         pkg.no_binary,
         pkg.only_binary,
+        hash_rejected={f: why for variant in pkg.variants for f, why in variant.hash_rejected.items()},
         bundled_versions=bundled_versions,
         direct={
             t: tuple(dict.fromkeys(direct_via[t])) for t, s in statuses.items() if s in _TRACED and direct_via.get(t)
@@ -449,6 +465,8 @@ def check_lockfile(
     lockfile read. Naming one for any other lockfile raises SourceError.
     A pip installation report (`pip install --dry-run --report`) is resolved for one environment, so it raises
     SourceError unless every target matches that environment's platform, machine, Python and implementation.
+    A uv.lock made with `[tool.uv] environments` is locked for those environments only (`uv sync` fails anywhere
+    else, and the lock leaves out what other platforms need), so it raises SourceError unless every target is in them.
     extras, all_extras, groups, only_groups and no_dev select the same install as the CLI's corresponding flags.
     With no selectors, lockfiles keep the conservative all-extras/all-groups check. An explicit empty extras or
     groups iterable selects the install with no extras and the installer's default groups. pyproject.toml with
@@ -490,6 +508,7 @@ def _check_lockfile(
     no_dev: bool = False,
 ) -> tuple[list[Result], Source, list[Row]]:
     """check_lockfile(), also returning the source and check rows for diff's skips and suggestions."""
+    default_targets = targets is None
     targets = _package_targets(targets)
     pyodide_locks = tuple(pyodide_locks)
     if online and offline:
@@ -531,10 +550,11 @@ def _check_lockfile(
             if extra_names or all_extras:
                 raise SourceError(f"{source.label}: no [project] optional-dependencies to select from")
             if not (group_names or only_groups):
-                if source.pyproject_groups:
-                    names = ", ".join(sorted(source.pyproject_groups))
+                group_names_listed = pyproject_group_names(source.pyproject_groups)
+                if group_names_listed:
                     raise SourceError(
-                        f"{source.label}: no [project] table; pick one with groups or only_groups: {names}"
+                        f"{source.label}: no [project] table; pick one with groups or only_groups: "
+                        f"{', '.join(group_names_listed)}"
                     )
                 raise SourceError(f"{source.label}: no [project] table and no groups to select")
         if only_groups and (extra_names or all_extras):
@@ -595,6 +615,9 @@ def _check_lockfile(
             resolve_deps(source, targets, resolver)
     else:
         check_report_targets(source, targets)
+        if default_targets:  # as on the command line: the default platforms the lock covers
+            targets = narrow_to_lock_environments([source], targets)[0]
+        check_lock_environments(source, targets)
         if offline:
             require_offline([source], "offline=True", undo="set offline=False")
 

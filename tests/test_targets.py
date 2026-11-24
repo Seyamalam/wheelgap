@@ -476,12 +476,14 @@ def test_linux_i686_takes_legacy_manylinux():
     assert not accepts(t("linux-x86_64"), "x-1-cp313-cp313-manylinux_2_17_i686.whl")
 
 
-def test_plain_linux_arch_wheels_count_on_glibc_only():
+def test_plain_linux_arch_wheels_count_on_every_linux():
     # PyPI accepts linux_armv7l uploads for the Raspberry Pi (grpcio ships them), and pip installs them.
     assert accepts(t("linux-armv7l"), "grpcio-1.85.1-cp313-cp313-linux_armv7l.whl")
     assert not accepts(t("linux-aarch64"), "grpcio-1.85.1-cp313-cp313-linux_armv7l.whl")
-    # They're glibc builds, so they don't count on Alpine (pip would take them, then fail to load them).
-    assert not accepts(t("musl-armv7l"), "grpcio-1.85.1-cp313-cp313-linux_armv7l.whl")
+    # pip and uv take them on Alpine too (whether a glibc build then loads there is another question).
+    assert accepts(t("musl-armv7l"), "grpcio-1.85.1-cp313-cp313-linux_armv7l.whl")
+    assert not accepts(t("musl-aarch64"), "grpcio-1.85.1-cp313-cp313-linux_armv7l.whl")
+    assert t("musl-x86_64").platform_tags()[-1] == "linux_x86_64"
 
 
 def test_ios_targets():

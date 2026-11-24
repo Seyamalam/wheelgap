@@ -397,11 +397,14 @@ class Target:
         family, arch = PLATFORMS[self.platform]
         if family == "pyodide":
             return list(PYODIDE_PLATFORMS[(self.major, self.minor)])
+        # pip and uv also take plain linux_<arch> wheels, on glibc and on musl alike; PyPI only allows them for
+        # 32-bit ARM (Raspberry Pi), but other indexes have them (PyTorch's). pip lists linux_<arch> first
+        # (packaging 26.3's tags._linux_platforms), uv last (compatible_tags in crates/uv-platform-tags/src/tags.rs at
+        # 0.13.9); the order doesn't change which files are accepted.
         if family == "manylinux":
-            # pip also takes plain linux_<arch> wheels; PyPI only allows them for 32-bit ARM (Raspberry Pi).
             return manylinux_platforms(arch, self.glibc) + [f"linux_{arch}"]
         if family == "musllinux":
-            return musllinux_platforms(arch, self.musl)
+            return musllinux_platforms(arch, self.musl) + [f"linux_{arch}"]
         if family == "macos":
             return list(tags.mac_platforms(self.macos, arch))
         if family == "ios":
