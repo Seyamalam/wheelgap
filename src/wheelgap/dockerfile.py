@@ -2378,6 +2378,7 @@ class _Install:
     module: bool = False  # `python -m pip`, which imports from the working folder first
     created: int = 0  # how many of the reader's `created` come before it
     no_deps: bool = False
+    upgrade: bool = False  # --upgrade/-U, which replaces a version already in the image
     scripts: int = 0  # how many commands that run the project's own scripts come before it (InputsReport.scripts)
 
 
@@ -3109,9 +3110,9 @@ class _RunReader:
                 # A pip other than the newest may pick other files (older pips don't know newer manylinux tags).
                 return "warning", f"`{shown}`, which installs a pip version wheelgap doesn't answer for"
             return "installer-tools", " ".join(dict.fromkeys(tools))
-        files, constraints, prefer_binary, names, no_deps = _pip_install_files(number, rest, uv, uv_system)
+        files, constraints, prefer_binary, names, no_deps, upgrade = _pip_install_files(number, rest, uv, uv_system)
         return "install", _Install(
-            uv, files, constraints, prefer_binary, names, None, None, globs=globs, no_deps=no_deps
+            uv, files, constraints, prefer_binary, names, None, None, globs=globs, no_deps=no_deps, upgrade=upgrade
         )
 
 
@@ -3254,11 +3255,11 @@ def _command_line_requirement(number: int, tool: str, text: str) -> str:
 
 def _pip_install_files(
     number: int, rest: list[str], uv: bool, uv_system: bool
-) -> tuple[list[str], list[str], bool, list[str], bool]:
+) -> tuple[list[str], list[str], bool, list[str], bool, bool]:
     """(the -r FILEs, the -c FILEs, whether --prefer-binary is given, the requirements named on the line, whether
-    --no-deps is given) of the words of a `pip install ...` or `uv pip install ...` command, from `install` on,
-    with flags that don't change what the installer picks. `uv_system` says UV_SYSTEM_PYTHON is set, which uv
-    reads as --system."""
+    --no-deps is given, whether --upgrade/-U is given) of the words of a `pip install ...` or `uv pip install ...`
+    command, from `install` on, with flags that don't change what the installer picks. `uv_system` says
+    UV_SYSTEM_PYTHON is set, which uv reads as --system."""
     tool = "uv pip" if uv else "pip"
     for word in rest[1:]:
         option = word.split("=", 1)[0]
@@ -3281,6 +3282,7 @@ def _pip_install_files(
     constraints: list[str] = []
     prefer_binary = False
     no_deps = False
+    upgrade = False
     system = uv_system
     i = 1
     while i < len(rest):
@@ -3300,6 +3302,9 @@ def _pip_install_files(
             elif rest[i] == "--no-deps":
                 no_deps = True
                 i += 1
+            elif rest[i] in ("--upgrade", "-U"):
+                upgrade = True
+                i += 1
             elif width := _read_flag_words(rest, i, uv):
                 i += width
             else:
@@ -3313,6 +3318,9 @@ def _pip_install_files(
             i += 2
         elif rest[i] == "--no-deps":
             no_deps = True
+            i += 1
+        elif rest[i] in ("--upgrade", "-U"):
+            upgrade = True
             i += 1
         elif width := _read_flag_words(rest, i, uv):
             i += width
@@ -3344,7 +3352,7 @@ def _pip_install_files(
                     f"line {number}: uv pip install {option} {other}: uv reads a file by its name (a lock, a script, "
                     "a project), and --dockerfile-inputs only reads requirements files named *.txt or *.in for uv"
                 )
-    return files, constraints, prefer_binary, names, no_deps
+    return files, constraints, prefer_binary, names, no_deps, upgrade
 
 
 def _read_with(
@@ -3535,6 +3543,7 @@ def _dockerfile_requirements(
     used_constraints: dict[Path, tuple[Path, ...]] = {}
     used_line_files: dict[Path, tuple[Path, ...]] = {}
     installed_by_uv: dict[Path, bool] = {}
+    earlier: dict[str, tuple[int, str]] = {}  # package key -> (line, file) an earlier install already requires
 
     def copied_requirements(file: str, option: str, uv: bool, install: _Install) -> Path:
         """The file in the build context that `-r FILE` or `-c FILE` on the RUN at `number` reads in the image, for
@@ -3792,6 +3801,31 @@ def _dockerfile_requirements(
             used_constraints[host] = constraint_paths
             used_line_files.setdefault(host, hosts)
             found.setdefault(host, number)
+        # pip and uv keep a package that is already in the image when it satisfies the requirement; without
+        # --upgrade the build never fetches the newest release wheelgap checks, so when a later install asks
+        # again for one an earlier line installs, and doesn't pin it, say whose answer that is.
+        own = [
+            (pkg, host)
+            for host in hosts
+            if uv or not _PIP_PYLOCK_NAME_RE.fullmatch(host.name)  # a pylock is a lock, not requirements text
+            for pkg in parse_requirements(host, constraint_paths, hosts).packages
+        ]
+        if not install.upgrade:
+            tool = "uv pip" if uv else "pip"
+            for pkg, host in own:
+                if pkg.version is None and (before := earlier.get(pkg.key)) is not None:
+                    line, earlier_file = before
+                    report.notes.append(
+                        (
+                            number,
+                            "kept-version",
+                            f"{pkg.name} is already installed by line {line} ({earlier_file}); {tool} keeps "
+                            f"that version if it satisfies {pkg.origin or host.name}, and wheelgap checked "
+                            "the newest release",
+                        )
+                    )
+        for pkg, host in own:
+            earlier.setdefault(pkg.key, (number, pkg.origin or host.name))
         for glob in install.globs:
             check_glob(glob, install)
         if install.names:

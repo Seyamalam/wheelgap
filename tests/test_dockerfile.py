@@ -2630,6 +2630,58 @@ def test_dockerfile_inputs_uv_install_under_copy_dot(tmp_path):
     assert dockerfile_requirements(alone, uv_installs=set()) == [(5, requirements)]
 
 
+_KEPT_RUN = "FROM python:3.13\nWORKDIR /app\nCOPY base.txt app.txt ./\nRUN pip install -r base.txt\nRUN {} -r app.txt\n"
+
+
+def test_dockerfile_inputs_notes_a_version_pip_keeps(tmp_path):
+    """#636: without --upgrade, pip keeps a package already installed that satisfies a later requirement, where
+    wheelgap checks the newest release — say so, naming both lines and both files."""
+    path = _context(tmp_path, _KEPT_RUN.format("pip install"), ["base.txt", "app.txt"])
+    (tmp_path / "base.txt").write_text("numpy==2.1.0\n", encoding="utf-8")
+    (tmp_path / "app.txt").write_text("numpy>=2\n", encoding="utf-8")
+    report = InputsReport()
+    dockerfile_requirements(path, report=report)
+    assert report.notes == [
+        (
+            5,
+            "kept-version",
+            "numpy is already installed by line 4 (base.txt); pip keeps that version if it satisfies app.txt, "
+            "and wheelgap checked the newest release",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("run", "app_req"),
+    [
+        ("pip install --upgrade", "numpy>=2"),  # --upgrade replaces it: newest is fetched
+        ("pip install -U", "numpy>=2"),
+        ("pip install", "numpy==2.5.5"),  # a pin is checked as written
+        ("pip install", "scipy>=1"),  # a different package isn't kept
+        ("uv pip install --system --upgrade", "numpy==2.5.5"),  # a uv line with --upgrade
+    ],
+)
+def test_dockerfile_inputs_no_kept_version_note(tmp_path, run, app_req):
+    path = _context(tmp_path, _KEPT_RUN.format(run), ["base.txt", "app.txt"])
+    (tmp_path / "base.txt").write_text("numpy==2.1.0\n", encoding="utf-8")
+    (tmp_path / "app.txt").write_text(f"{app_req}\n", encoding="utf-8")
+    report = InputsReport()
+    dockerfile_requirements(path, report=report, uv_installs=set())
+    assert [note for note in report.notes if note[1] == "kept-version"] == []
+
+
+def test_cli_dockerfile_inputs_prints_the_kept_version_note(tmp_path, capsys, fake_pypi):
+    path = _context(tmp_path, _KEPT_RUN.format("pip install"), ["base.txt", "app.txt"])
+    (tmp_path / "base.txt").write_text("purewheel==3.1\n", encoding="utf-8")
+    (tmp_path / "app.txt").write_text("purewheel>=3\n", encoding="utf-8")
+    main(["--dockerfile", str(path), "--dockerfile-inputs"])
+    err = capsys.readouterr().err
+    assert (
+        f"{path}:5: purewheel is already installed by line 4 (base.txt); pip keeps that version if it "
+        "satisfies app.txt, and wheelgap checked the newest release" in err
+    )
+
+
 def test_cli_dockerfile_inputs_checks_a_uv_install_as_uv_installs_it(tmp_path, capsys, fake_pypi, monkeypatch):
     """uv ignores a Requires-Python upper bound that makes pip refuse a pin, so the same file gets uv's answer under
     `RUN uv pip install` and pip's under `RUN pip install`."""
