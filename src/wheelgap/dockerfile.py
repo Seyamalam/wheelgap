@@ -1496,7 +1496,7 @@ def _copies_uv_config(copy: _Copy, context: Path, ignore_rules: tuple[dockerigno
         )
     for name, host in _uv_config_files(copy, context, ignore_rules):
         if why := _uv_config_reason(host, name):
-            return f"this COPY brings {why}"
+            return f"this COPY brings {why}: copy the requirements file alone and run uv pip install before this COPY"
     return None
 
 
