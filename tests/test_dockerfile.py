@@ -2513,7 +2513,10 @@ _UV_COPY_RUN = "FROM python:3.13\nWORKDIR /app\nCOPY . ./\nRUN uv pip install --
         ("pyproject.toml", '[tool.uv]\nprerelease = "allow"\n', ":3: .*brings pyproject.toml, whose \\[tool.uv\\]"),
         ("pyproject.toml", '[tool.uv.pip]\nprerelease = "allow"\n', ":3: .*brings pyproject.toml, whose \\[tool.uv\\]"),
         ("pyproject.toml", '[[tool.uv.index]]\nurl = "https://e.test"\n', ":3: .*whose \\[tool.uv\\] table"),
-        ("sub/pyproject.toml", "[tool.uv]\nno-binary = true\n", ":3: .*brings pyproject.toml"),
+        # Named by its path in the build context, so a monorepo's COPY . . says which one.
+        ("sub/pyproject.toml", "[tool.uv]\nno-binary = true\n", ":3: this COPY brings sub/pyproject\\.toml, whose"),
+        # A Windows image's file system doesn't tell the case apart.
+        ("UV.toml", "no-binary = true\n", ":3: this COPY brings UV.toml, which uv reads for uv pip install"),
         ("pyproject.toml", "[project\n", ":3: this COPY brings pyproject.toml, which isn't valid TOML"),
         ("uv.toml", "no-binary = [\n", ":3: this COPY brings uv.toml, which isn't valid TOML"),
     ],
@@ -2526,6 +2529,49 @@ def test_dockerfile_inputs_uv_install_reads_the_configs_a_copy_brings(tmp_path, 
     else:
         with pytest.raises(DockerfileError, match=message):
             dockerfile_requirements(path)
+
+
+@pytest.mark.parametrize(
+    ("copy", "content", "message"),
+    [
+        ("COPY requirements.txt pyproject.toml ./", '[project]\nname = "app"\n', None),
+        (
+            "COPY requirements.txt pyproject.toml ./",
+            '[tool.uv]\nprerelease = "allow"\n',
+            ":3: this COPY brings pyproject.toml, whose \\[tool.uv\\] table",
+        ),
+        # The file is read under the name it lands with.
+        ("COPY requirements.txt ./\nCOPY pyproject.toml /app/uv.toml", "", None),
+        (
+            "COPY requirements.txt ./\nCOPY pyproject.toml /app/uv.toml",
+            '[project]\nname = "app"\n',
+            ":4: this COPY brings pyproject.toml as uv.toml, which uv reads for uv pip install",
+        ),
+    ],
+)
+def test_dockerfile_inputs_uv_install_reads_a_copied_config_file(tmp_path, copy, content, message):
+    path = _context(
+        tmp_path, f"FROM python:3.13\nWORKDIR /app\n{copy}\nRUN uv pip install --system -r requirements.txt\n"
+    )
+    (tmp_path / "pyproject.toml").write_text(content, encoding="utf-8")
+    if message is None:
+        assert dockerfile_requirements(path, uv_installs=set())[0][1] == tmp_path / "requirements.txt"
+    else:
+        with pytest.raises(DockerfileError, match=message):
+            dockerfile_requirements(path)
+
+
+def test_dockerfile_inputs_uv_install_refuses_a_linked_config(tmp_path):
+    """Docker copies a link inside a copied folder as a link, which resolves in the image: the file it points to in
+    the build context isn't what uv reads there."""
+    path = _context(tmp_path, _UV_COPY_RUN)
+    (tmp_path / "plain.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
+    try:
+        (tmp_path / "pyproject.toml").symlink_to("plain.toml")
+    except OSError:
+        pytest.skip("symlinks aren't available here")
+    with pytest.raises(DockerfileError, match=":3: this COPY brings pyproject.toml, a symlink, which"):
+        dockerfile_requirements(path)
 
 
 def test_dockerfile_inputs_uv_install_under_copy_dot(tmp_path):

@@ -1434,56 +1434,50 @@ def _copies_config(
     return names == _PIP_CONFIG_NAMES and (copy.dest + "/").startswith(_PIP_CONFIG)
 
 
-def _uv_config_files(copy: _Copy, context: Path, ignore_rules: tuple[dockerignore.Rule, ...]) -> list[tuple[str, Path]]:
-    """Each uv.toml or pyproject.toml a COPY brings into the image, as (the name it lands with, its path on disk)."""
-    found: list[tuple[str, Path]] = []
+def _uv_config_files(
+    copy: _Copy, context: Path, ignore_rules: tuple[dockerignore.Rule, ...]
+) -> list[tuple[str, str, Path, bool]]:
+    """Each uv.toml or pyproject.toml a COPY brings into the image, as (how to name it: its path in the build context,
+    the name it lands with, its path on disk, whether the image gets it as a symlink). Docker copies a link inside a
+    copied folder as a link, which resolves in the image, not in the build context."""
+    found: list[tuple[str, str, Path, bool]] = []
     for rel, host, is_dir in copy.sources:
         if is_dir:
             for dirpath, dirnames, filenames in os.walk(host):
-                if not ignore_rules:
-                    for name in sorted((*dirnames, *filenames)):
-                        if name.lower() in _UV_CONFIG_NAMES:
-                            found.append((name, Path(dirpath) / name))
-                    continue
                 rel_dir = Path(dirpath).relative_to(context).as_posix()
                 prefix = "" if rel_dir == "." else f"{rel_dir}/"
-                for name in sorted(filenames):
+                for name in sorted((*dirnames, *filenames)):
+                    entry = Path(dirpath) / name
                     if name.lower() in _UV_CONFIG_NAMES and not dockerignore.ignored(f"{prefix}{name}", ignore_rules):
-                        found.append((name, Path(dirpath) / name))
-                kept: list[str] = []
-                for dirname in sorted(dirnames):
-                    entry_rel = f"{prefix}{dirname}"
-                    if dirname.lower() in _UV_CONFIG_NAMES and not dockerignore.ignored(entry_rel, ignore_rules):
-                        found.append((dirname, Path(dirpath) / dirname))
-                    if not dockerignore.pruned(entry_rel, ignore_rules):
-                        kept.append(dirname)
-                dirnames[:] = kept
+                        found.append((f"{prefix}{name}", name, entry, entry.is_symlink()))
+                dirnames[:] = [d for d in sorted(dirnames) if not dockerignore.pruned(f"{prefix}{d}", ignore_rules)]
         # Not knowing whether dest is a folder in the image, either name may be the one the file gets.
         elif any(posixpath.basename(name).lower() in _UV_CONFIG_NAMES for name in (rel, copy.dest)):
             base = posixpath.basename(copy.dest)
-            found.append((base if base.lower() in _UV_CONFIG_NAMES else posixpath.basename(rel), host))
+            name = base if base.lower() in _UV_CONFIG_NAMES else posixpath.basename(rel)
+            found.append((rel if posixpath.basename(rel) == name else f"{rel} as {name}", name, host, False))
     return found
 
 
-def _uv_config_reason(path: Path, name: str) -> str | None:
-    """Why the uv.toml or pyproject.toml `path` (landing as `name` in the image) makes `uv pip install` unreadable:
-    any key under a pyproject.toml's [tool.uv] table (uv reads settings from it) or a non-empty uv.toml. None when
-    uv reads nothing from the file."""
+def _uv_config_reason(path: Path, name: str, shown: str) -> str | None:
+    """Why the uv.toml or pyproject.toml `path` (landing as `name` in the image, `shown` in the message) makes
+    `uv pip install` unreadable: any key under a pyproject.toml's [tool.uv] table (uv reads settings from it) or a
+    non-empty uv.toml. None when uv reads nothing from the file."""
     try:
         text = path.read_bytes().decode("utf-8-sig")
     except UnicodeDecodeError:
-        return f"{name}, which isn't UTF-8"
+        return f"{shown}, which isn't UTF-8"
     except OSError:
-        return f"{name}, which can't be read"
+        return f"{shown}, which can't be read"
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        return f"{name}, which isn't valid TOML: {exc}"
-    if name == "uv.toml":
-        return f"{name}, which uv reads for uv pip install" if data else None
+        return f"{shown}, which isn't valid TOML: {exc}"
+    if name.lower() == "uv.toml":
+        return f"{shown}, which uv reads for uv pip install" if data else None
     tool = data.get("tool")
     uv = tool.get("uv") if isinstance(tool, dict) else None
-    return f"{name}, whose [tool.uv] table uv reads for uv pip install" if uv else None
+    return f"{shown}, whose [tool.uv] table uv reads for uv pip install" if uv else None
 
 
 def _copies_uv_config(copy: _Copy, context: Path, ignore_rules: tuple[dockerignore.Rule, ...]) -> str | None:
@@ -1494,8 +1488,13 @@ def _copies_uv_config(copy: _Copy, context: Path, ignore_rules: tuple[dockerigno
             "--dockerfile-inputs doesn't follow files copied from another stage or image: run uv pip install "
             "before this COPY"
         )
-    for name, host in _uv_config_files(copy, context, ignore_rules):
-        if why := _uv_config_reason(host, name):
+    for shown, name, host, link in _uv_config_files(copy, context, ignore_rules):
+        why = (
+            f"{shown}, a symlink, which --dockerfile-inputs doesn't read through"
+            if link
+            else _uv_config_reason(host, name, shown)
+        )
+        if why:
             return f"this COPY brings {why}: copy the requirements file alone and run uv pip install before this COPY"
     return None
 
@@ -3410,8 +3409,9 @@ def dockerfile_requirements(
     documented `COPY --from=ghcr.io/astral-sh/uv /uv /uvx DEST/`), through the same lookup and checks. `uv_installs`
     must be given for it, and collects the (line, file) pairs uv installs: the caller checks those by uv's rules, not
     pip's. Because wheelgap picks a release for a range as pip does, a uv line is read only when every requirement is
-    pinned with == (as for --prefer-binary) and `dependencies` is false; a copied uv.toml or pyproject.toml, a file
-    not named *.txt or *.in, and a -r inside a constraints file (which uv reads as constraints) are errors as well.
+    pinned with == (as for --prefer-binary) and `dependencies` is false; a copied uv.toml or pyproject.toml that uv
+    reads settings from (_copies_uv_config), a file not named *.txt or *.in, and a -r inside a constraints file
+    (which uv reads as constraints) are errors as well.
     """
     try:
         text = path.read_bytes().decode("utf-8-sig")

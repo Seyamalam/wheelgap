@@ -263,10 +263,12 @@ locks, scripts or projects), an option line other than a plain `-r FILE` or `-c 
 and with a second index it takes the first one that has the package, where pip takes the best file of them all; a
 requirement with its own `--hash` is fine), a `-r` inside a constraints file (pip installs what it names, uv only
 constrains with it), a `uv.toml` or `pyproject.toml` the image's `uv pip install` would read settings from: a
-non-empty `uv.toml` a `COPY` brings before the uv line, or a `pyproject.toml` with a `[tool.uv]` table (a plain
-`pyproject.toml` — `COPY . .` brings one for nearly every project — is fine, as is a `uv.toml` that sets nothing;
-a file that isn't valid TOML or isn't UTF-8 is refused, naming it), a file
-that pip installs on one line and uv on another, and every other `uv` command (`uv sync`, `uv add`, `uv pip sync`).
+non-empty `uv.toml` a `COPY` brings before the uv line, or a `pyproject.toml` with a `[tool.uv]` table, anywhere in
+what it copies (**after 0.14.0**; 0.14.0 refuses any copied `pyproject.toml`). A plain `pyproject.toml` — `COPY . .`
+brings one for nearly every project — is fine, as is a `uv.toml` that sets nothing; a file that isn't valid TOML or
+isn't UTF-8, or that is a symlink inside a copied folder, is refused, naming its path in the build context. The way
+out is to copy the requirements file alone and run `uv pip install` before the `COPY` that brings it. Also errors: a
+file that pip installs on one line and uv on another, and every other `uv` command (`uv sync`, `uv add`, `uv pip sync`).
 
 A `.dockerignore` is read as BuildKit reads it (0.13.0 refuses any project that has one):
 `<Dockerfile name>.dockerignore` beside the Dockerfile if there is one, otherwise `.dockerignore` at the root of the
