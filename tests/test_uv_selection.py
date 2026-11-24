@@ -1,0 +1,2415 @@
+import json
+import shutil
+import tomllib
+
+import pytest
+
+from wheelgap import check as check_module
+from wheelgap.check import check, marker_holds, poetry_extras_decide, reachable
+from wheelgap.cli import main
+from wheelgap.sources import (
+    SourceError,
+    UvSelection,
+    _poetry_extras_declared_elsewhere,
+    file_kind,
+    load_inputs,
+    select_uv_dependencies,
+    uv_conflict_name,
+)
+from wheelgap.targets import build_targets
+
+
+def installed(fixtures, selection=None, platform="linux-x86_64"):
+    sources = load_inputs([str(fixtures / "uvselect")])
+    if selection is not None:
+        select_uv_dependencies(sources, selection)
+    return {r.package.name for r in check(sources, build_targets(["3.13"], [platform])) if r.needed}
+
+
+def test_whole_lock_is_what_uv_sync_all_installs(fixtures):
+    # No selection checks what `uv sync --all-packages --all-extras --all-groups` installs: every member's extras and
+    # groups, and a dependency's extras only where an edge asks for them (`unused` is an extra nothing requests).
+    assert installed(fixtures) == {
+        "common",
+        "library",
+        "librarybase",
+        "one",
+        "two",
+        "three",
+        "api",
+        "gpu",
+        "devtool",
+        "docstool",
+    }
+
+
+# pydantic-ai's lock (4df9988f) in miniature: an extra lists `defender` plainly and `defender[onnx]` only below 3.15,
+# so no install of the lock reaches `onnxruntime` on 3.15; `uv export --all-packages --all-extras --all-groups` agrees.
+EXTRA_BELOW_315_LOCK = """
+version = 1
+requires-python = ">=3.11"
+[[package]]
+name = "app"
+version = "1.0"
+source = { editable = "." }
+[package.optional-dependencies]
+ml = [
+    { name = "defender" },
+    { name = "defender", extra = ["onnx"], marker = "python_full_version < '3.15'" },
+]
+[[package]]
+name = "defender"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [{ url = "https://example.invalid/defender-1.0-py3-none-any.whl" }]
+[package.optional-dependencies]
+onnx = [{ name = "onnxruntime" }]
+[[package]]
+name = "onnxruntime"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [{ url = "https://example.invalid/onnxruntime-1.0-cp314-cp314-manylinux_2_28_x86_64.whl" }]
+"""
+
+
+@pytest.mark.parametrize(("python", "expected"), [("3.14", {"defender", "onnxruntime"}), ("3.15", {"defender"})])
+def test_whole_lock_follows_a_dependency_extra_only_where_it_is_requested(tmp_path, python, expected):
+    (tmp_path / "uv.lock").write_text(EXTRA_BELOW_315_LOCK, encoding="utf-8")
+    sources = load_inputs([str(tmp_path / "uv.lock")])
+    rows = check(sources, build_targets([python], ["linux-x86_64"]))
+    assert {r.package.name for r in rows if r.needed} == expected
+
+
+# The edges and markers of locks uv 0.13.1 wrote (`uv lock --python 3.13`), with the hashes left out. Two extras of
+# `demo` conflict ([tool.uv] conflicts = [[{ extra = "old" }, { extra = "new" }]]): uv writes when each side is on as
+# `extra == 'extra-4-demo-old'`, and keeps clauses that need both sides at once, which no install has.
+PORTALOCKER = """
+[[package]]
+name = "portalocker"
+version = "1.7.1"
+source = {{ registry = "https://pypi.org/simple" }}
+dependencies = [{{ name = "pywin32", marker = "{old}" }}]
+wheels = [{{ url = "https://example.invalid/portalocker-1.7.1-py2.py3-none-any.whl" }}]
+[[package]]
+name = "portalocker"
+version = "2.10.1"
+source = {{ registry = "https://pypi.org/simple" }}
+dependencies = [{{ name = "pywin32", marker = "{new}" }}]
+wheels = [{{ url = "https://example.invalid/portalocker-2.10.1-py3-none-any.whl" }}]
+[[package]]
+name = "pywin32"
+version = "312"
+source = {{ registry = "https://pypi.org/simple" }}
+wheels = [{{ url = "https://example.invalid/pywin32-312-cp313-cp313-win_amd64.whl" }}]
+"""
+OLD_172 = '{ name = "portalocker", version = "1.7.1", source = { registry = "https://pypi.org/simple" }'
+NEW_2101 = '{ name = "portalocker", version = "2.10.1", source = { registry = "https://pypi.org/simple" }'
+
+
+def conflict_lock(kind):
+    """`kind`: "extra" (the extras old and new of demo conflict) or "group" (its dependency groups, new the default)."""
+    old, new = f"{kind}-4-demo-old", f"{kind}-4-demo-new"
+    table = "optional-dependencies" if kind == "extra" else "dev-dependencies"
+    return (
+        f'version = 1\nrevision = 5\nrequires-python = ">=3.12"\n'
+        f'conflicts = [[{{ package = "demo", {kind} = "new" }}, {{ package = "demo", {kind} = "old" }}]]\n'
+        f'[[package]]\nname = "demo"\nversion = "0.1.0"\nsource = {{ virtual = "." }}\n'
+        "dependencies = [\n"
+        f"    {OLD_172}, marker = \"extra == '{old}'\" }},\n"
+        f"    {NEW_2101}, marker = \"extra == '{new}' or extra != '{old}'\" }},\n]\n"
+        f"[package.{table}]\nnew = [{NEW_2101} }}]\nold = [{OLD_172} }}]\n"
+        + PORTALOCKER.format(
+            old=f"(sys_platform == 'win32' and extra == '{old}') or (extra == '{new}' and extra == '{old}')",
+            new=f"(sys_platform == 'win32' and extra == '{new}') or (sys_platform == 'win32' and extra != '{old}') "
+            f"or (extra == '{new}' and extra == '{old}')",
+        )
+    )
+
+
+def needed(tmp_path, lock, selection=None, pyproject=None):
+    (tmp_path / "uv.lock").write_text(lock, encoding="utf-8")
+    if pyproject is not None:
+        (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    sources = load_inputs([str(tmp_path / "uv.lock")])
+    if selection is not None:
+        select_uv_dependencies(sources, selection)
+    targets = build_targets(["3.13"], ["linux-x86_64", "win-amd64"])
+    rows = check(sources, targets)
+    return {
+        t.platform: {f"{r.package.name} {r.package.version}" for r in rows if r.results[t].value != "n/a"}
+        for t in targets
+    }
+
+
+BOTH = {"portalocker 1.7.1", "portalocker 2.10.1"}
+
+
+@pytest.mark.parametrize(
+    ("selection", "linux"),
+    [
+        # Every extra: each way of turning on none or one side, as `uv sync --all-extras --no-extra ...` installs.
+        (None, BOTH),
+        (UvSelection(all_extras=True), BOTH),  # uv refuses both sides, so the same
+        (UvSelection(), {"portalocker 2.10.1"}),  # plain `uv sync`
+        (UvSelection(extras=frozenset({"new"})), {"portalocker 2.10.1"}),
+        (UvSelection(extras=frozenset({"old"})), {"portalocker 1.7.1"}),  # only the extra's portalocker
+    ],
+)
+def test_uv_conflict_markers_are_evaluated_as_uv_does(tmp_path, selection, linux):
+    # pywin32's only clause off Windows needs both extras on, which uv never installs (and wheelgap used to count).
+    assert needed(tmp_path, conflict_lock("extra"), selection) == {
+        "linux-x86_64": linux,
+        "win-amd64": {*linux, "pywin32 312"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("selection", "linux"),
+    [
+        (None, BOTH),
+        (UvSelection(no_dev=True), {"portalocker 2.10.1"}),  # the default group new: `uv sync --no-dev`
+        (UvSelection(only_groups=frozenset({"old"})), {"portalocker 1.7.1"}),  # `uv sync --only-group old`
+    ],
+)
+def test_uv_conflicting_groups(tmp_path, selection, linux):
+    pyproject = '[project]\nname = "demo"\nversion = "0.1.0"\n[tool.uv]\ndefault-groups = ["new"]\n'
+    found = needed(tmp_path, conflict_lock("group"), selection, pyproject)
+    assert found == {"linux-x86_64": linux, "win-amd64": {*linux, "pywin32 312"}}
+
+
+# A workspace (uv lock, uv 0.13.1) whose project asks for `lib[cpu]`, where lib's extras cpu and gpu conflict. uv
+# counts an edge's own extras as on for its marker, and turns them on for the whole install, so any install with gpu
+# also has cpu, which `uv sync` refuses ("Found conflicting extras `lib[cpu]` and `lib[gpu]` enabled
+# simultaneously"): no install has portalocker 2.10.1.
+WORKSPACE_CONFLICT_LOCK = (
+    """
+version = 1
+revision = 5
+requires-python = ">=3.12"
+conflicts = [[{ package = "lib", extra = "cpu" }, { package = "lib", extra = "gpu" }]]
+[manifest]
+members = ["app", "lib"]
+[[package]]
+name = "app"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [{ name = "lib" }, { name = "lib", extra = ["cpu"], marker = "extra == 'extra-3-lib-cpu'" }]
+[[package]]
+name = "lib"
+version = "0.1.0"
+source = { editable = "lib" }
+[package.optional-dependencies]
+"""
+    + f"cpu = [{OLD_172} }}]\ngpu = [{NEW_2101} }}]\n"
+    + PORTALOCKER.format(old="sys_platform == 'win32'", new="sys_platform == 'win32'")
+)
+
+
+def test_uv_conflict_turned_on_by_an_edge(tmp_path):
+    assert needed(tmp_path, WORKSPACE_CONFLICT_LOCK) == {
+        "linux-x86_64": {"portalocker 1.7.1"},
+        "win-amd64": {"portalocker 1.7.1", "pywin32 312"},
+    }
+
+
+@pytest.mark.parametrize(
+    "conflicts",
+    [
+        # A conflict between projects, which leaves members out of an install: not worked out, so unknown as before.
+        'conflicts = [[{ package = "demo" }, { package = "other" }]]',
+        'conflicts = [[{ package = "demo", extra = "new", group = "old" }]]',  # not a shape uv writes
+        "conflicts = 5",
+    ],
+)
+def test_uv_conflicts_wheelgap_cannot_work_out_stay_unknown(tmp_path, conflicts):
+    lock = conflict_lock("extra").replace(conflict_lock("extra").splitlines()[3], conflicts)
+    assert needed(tmp_path, lock)["linux-x86_64"] == {*BOTH, "pywin32 312"}
+
+
+# uv sync evaluates a root's group edges before its first walk, so an extra that an edge turns on later (lib[cpu]) is
+# still off for them (to_resolution_from_packages; its TODO). uv 0.13.1 writes this lock for a project that asks for
+# lib[cpu] and has a dev group needing portalocker, which lib's cpu and gpu extras pin apart, and `uv sync --dry-run`
+# plans both portalockers: 1.7.1 through lib[cpu] and 2.10.1 through the dev group.
+GROUP_BEFORE_WALK_LOCK = (
+    """
+version = 1
+revision = 5
+requires-python = ">=3.12"
+conflicts = [[{ package = "lib", extra = "cpu" }, { package = "lib", extra = "gpu" }]]
+[manifest]
+members = ["app", "lib"]
+[[package]]
+name = "app"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [{ name = "lib", extra = ["cpu"], marker = "extra == 'extra-3-lib-cpu'" }]
+[package.dev-dependencies]
+"""
+    + f"dev = [{OLD_172}, marker = \"extra == 'extra-3-lib-cpu'\" }}, "
+    + f"{NEW_2101}, marker = \"extra == 'extra-3-lib-gpu' or extra != 'extra-3-lib-cpu'\" }}]\n"
+    + """
+[[package]]
+name = "lib"
+version = "0.1.0"
+source = { editable = "lib" }
+[package.optional-dependencies]
+"""
+    + f"cpu = [{OLD_172} }}]\ngpu = [{NEW_2101} }}]\n"
+    + PORTALOCKER.format(old="sys_platform == 'win32'", new="sys_platform == 'win32'")
+)
+
+
+@pytest.mark.parametrize("selection", [None, UvSelection()])
+def test_uv_group_edges_see_only_the_roots_items(tmp_path, selection):
+    assert needed(tmp_path, GROUP_BEFORE_WALK_LOCK, selection)["linux-x86_64"] == BOTH
+
+
+def test_uv_project_conflict_markers_stay_unknown(tmp_path):
+    # `{ package = "a" }` conflicts: uv writes `extra == 'project-1-a'`, which used to read as false, hiding every
+    # package (`uv sync --package a` and `--package b` install them).
+    lock = (
+        'version = 1\nrevision = 5\nrequires-python = ">=3.12"\n'
+        'conflicts = [[{ package = "a" }, { package = "b" }]]\n[manifest]\nmembers = ["a", "b", "root"]\n'
+        '[[package]]\nname = "root"\nversion = "0.1.0"\nsource = { virtual = "." }\n'
+        f'[[package]]\nname = "a"\nversion = "0.1.0"\nsource = {{ editable = "a" }}\n'
+        f"dependencies = [{OLD_172}, marker = \"extra == 'project-1-a'\" }}]\n"
+        f'[[package]]\nname = "b"\nversion = "0.1.0"\nsource = {{ editable = "b" }}\n'
+        f"dependencies = [{NEW_2101}, marker = \"extra == 'project-1-b'\" }}]\n"
+        + PORTALOCKER.format(old="sys_platform == 'win32'", new="sys_platform == 'win32'")
+    )
+    assert needed(tmp_path, lock)["linux-x86_64"] == BOTH
+
+
+def test_uv_conflict_names():
+    # uv's own examples: `extra-3-foo-x1` (universal_marker.rs), names normalized first.
+    assert uv_conflict_name("foo", "extra", "x1") == "extra-3-foo-x1"
+    assert uv_conflict_name("Real_Time.Voice", "group", "Dev_Tools") == "group-15-real-time-voice-dev-tools"
+    assert uv_conflict_name("demo", "project") == "project-4-demo"
+
+
+def test_no_dev_checks_runtime_without_unrequested_optional_packages(fixtures):
+    assert installed(fixtures, UvSelection(no_dev=True)) == {"common", "library", "librarybase", "one"}
+
+
+def test_extra_activates_transitive_extras_and_revisits_a_cycle(fixtures):
+    expected = {"common", "library", "librarybase", "one", "two", "three", "api"}
+    selection = UvSelection(extras=frozenset({"api"}), no_dev=True)
+    assert installed(fixtures, selection) == expected
+    assert installed(fixtures, selection, "win-amd64") == expected | {"winonly"}
+
+
+def test_explicit_extra_keeps_default_dev_group(fixtures):
+    assert "devtool" in installed(fixtures, UvSelection(extras=frozenset({"api"})))
+    assert "docstool" not in installed(fixtures, UvSelection(extras=frozenset({"api"})))
+
+
+def test_all_extras_does_not_activate_unrequested_dependency_extras(fixtures):
+    selected = installed(fixtures, UvSelection(all_extras=True))
+    assert {"api", "gpu", "devtool"} <= selected
+    assert not {"unused", "docstool"} & selected
+
+
+def test_group_and_only_group(fixtures):
+    assert {"devtool", "docstool", "common"} <= installed(fixtures, UvSelection(groups=frozenset({"docs"})))
+    assert installed(fixtures, UvSelection(only_groups=frozenset({"docs"}))) == {"docstool"}
+    assert installed(fixtures, UvSelection(only_groups=frozenset({"docs", "dev"}))) == {"docstool", "devtool"}
+
+
+def test_extra_markers_evaluate_whole_expression_per_extra():
+    (target,) = build_targets(["3.13"], ["linux-x86_64"])
+    assert marker_holds("extra == 'two' and extra != 'one'", target, extras=frozenset({"one", "two"}))
+    assert not marker_holds("extra == 'one' and extra == 'two'", target, extras=frozenset({"one", "two"}))
+    assert not marker_holds("'gpu' in extras", target, extras=frozenset({"api"}))
+    assert marker_holds("extra == 'extra-7-app-gpu'", target, extras=frozenset({"api"}))
+    assert marker_holds("extra == 'group-7-app-docs'", target, extras=frozenset({"api"}))
+
+
+@pytest.mark.parametrize(
+    "selection, message",
+    [
+        (UvSelection(extras=frozenset({"typo"})), "unknown extras"),
+        (UvSelection(groups=frozenset({"typo"})), "unknown groups"),
+        (UvSelection(only_groups=frozenset({"dev"}), no_dev=True), "explicit dev"),
+        (UvSelection(only_groups=frozenset({"docs"}), all_extras=True), "cannot be combined"),
+    ],
+)
+def test_invalid_selection_is_an_error(fixtures, selection, message):
+    with pytest.raises(SourceError, match=message):
+        select_uv_dependencies(load_inputs([str(fixtures / "uvselect")]), selection)
+
+
+def test_cli_production_selection_is_offline_and_has_no_false_gaps(fixtures, capsys, fake_pypi):
+    assert main([str(fixtures / "uvselect"), "--extra", "api", "--no-dev", "-p", "3.13", "-t", "linux", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert {p["name"] for p in report["packages"]} == {"common", "api", "library", "librarybase", "one", "two", "three"}
+    assert fake_pypi == []
+
+
+def test_config_selection_and_cli_override(fixtures, tmp_path, capsys, fake_pypi):
+    shutil.copy(fixtures / "uvselect" / "uv.lock", tmp_path)
+    (tmp_path / "pyproject.toml").write_text('[tool.wheelgap]\nextras = ["gpu"]\ngroups = ["docs"]\n')
+    assert main([str(tmp_path), "--extra", "api", "--only-group", "docs"]) == 2
+    assert "cannot be combined" in capsys.readouterr().err
+    assert main([str(tmp_path), "--extra", "api", "--group", "dev", "--json", "-t", "linux", "-p", "3.13"]) == 0
+    names = {p["name"] for p in json.loads(capsys.readouterr().out)["packages"]}
+    assert "api" in names and "gpu" not in names and "docstool" not in names
+    assert fake_pypi == []
+
+
+def test_non_uv_input_rejects_selection(tmp_path, capsys, fake_pypi):
+    path = tmp_path / "requirements.txt"
+    path.write_text("purewheel==3.1\n")
+    assert main([str(path), "--no-dev"]) == 2
+    assert "requires uv.lock" in capsys.readouterr().err
+    assert fake_pypi == []
+
+
+def test_empty_extras_and_groups_recorded_only_in_uv_metadata(tmp_path):
+    (tmp_path / "uv.lock").write_text("""
+version = 1
+[[package]]
+name = "app"
+source = { virtual = "." }
+[package.metadata]
+provides-extras = ["empty"]
+[package.metadata.requires-dev]
+dev = []
+docs = []
+""")
+    sources = load_inputs([str(tmp_path)])
+    select_uv_dependencies(sources, UvSelection(extras=frozenset({"empty"}), groups=frozenset({"docs"})))
+    assert check(sources, build_targets(["3.13"], ["linux"])) == []
+
+
+@pytest.mark.parametrize(
+    "defaults,expected",
+    [
+        ('["docs"]', {"common", "library", "librarybase", "one", "docstool"}),
+        ('"all"', {"common", "library", "librarybase", "one", "docstool", "devtool"}),
+        ("[]", {"common", "library", "librarybase", "one"}),
+    ],
+)
+def test_uv_default_groups(fixtures, tmp_path, defaults, expected):
+    shutil.copy(fixtures / "uvselect" / "uv.lock", tmp_path)
+    (tmp_path / "pyproject.toml").write_text(f"[tool.uv]\ndefault-groups = {defaults}\n")
+    sources = load_inputs([str(tmp_path)])
+    select_uv_dependencies(sources, UvSelection())
+    assert {r.package.name for r in check(sources, build_targets(["3.13"], ["linux"])) if r.needed} == expected
+
+
+def test_unselected_mode_does_not_interpret_uv_defaults(fixtures, tmp_path):
+    shutil.copy(fixtures / "uvselect" / "uv.lock", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[tool.uv]\ndefault-groups = 42\n")
+    sources = load_inputs([str(tmp_path)])
+    assert "docstool" in {r.package.name for r in check(sources, build_targets(["3.13"], ["linux"])) if r.needed}
+    with pytest.raises(SourceError, match="default-groups"):
+        select_uv_dependencies(sources, UvSelection())
+
+
+def test_manifest_groups_and_requirements_activate_dependency_extras(tmp_path):
+    (tmp_path / "uv.lock").write_text("""
+version = 1
+[manifest]
+requirements = [{ name = "dep", extras = ["feature"] }]
+[manifest.dependency-groups]
+docs = [{ name = "docs" }]
+[[package]]
+name = "dep"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = []
+[package.optional-dependencies]
+feature = [{ name = "feature" }]
+[[package]]
+name = "feature"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = []
+[[package]]
+name = "docs"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = []
+""")
+    sources = load_inputs([str(tmp_path)])
+    select_uv_dependencies(sources, UvSelection(no_dev=True))
+    targets = build_targets(["3.13"], ["linux"])
+    assert {r.package.name for r in check(sources, targets) if r.needed} == {"dep", "feature"}
+    select_uv_dependencies(sources, UvSelection(only_groups=frozenset({"docs"})))
+    assert {r.package.name for r in check(sources, targets) if r.needed} == {"docs"}
+
+
+def test_workspace_dependency_extras_are_normalized_without_installing_unused_members(fixtures, tmp_path):
+    lock = (
+        (fixtures / "uvselect" / "uv.lock")
+        .read_text()
+        .replace("version = 1\n", 'version = 1\n[manifest]\nmembers = ["member", "unusedmember"]\n', 1)
+    )
+    lock = lock.replace('{ name = "common" }', '{ name = "common" }, { name = "member", extra = ["web_API"] }', 1)
+    lock += """
+[[package]]
+name = "member"
+version = "1.0"
+source = { editable = "packages/member" }
+dependencies = [{ name = "common" }]
+[package.optional-dependencies]
+web_API = [{ name = "api" }]
+[[package]]
+name = "unusedmember"
+source = { editable = "packages/unusedmember" }
+dependencies = [{ name = "gpu" }]
+"""
+    (tmp_path / "uv.lock").write_text(lock)
+    sources = load_inputs([str(tmp_path)])
+    select_uv_dependencies(sources, UvSelection(no_dev=True))
+    assert {r.package.name for r in check(sources, build_targets(["3.13"], ["linux"])) if r.needed} == {
+        "common",
+        "library",
+        "librarybase",
+        "one",
+        "api",
+    }
+
+
+def test_only_group_overrides_configured_project_selection(fixtures, tmp_path, capsys, fake_pypi):
+    shutil.copy(fixtures / "uvselect" / "uv.lock", tmp_path)
+    (tmp_path / "pyproject.toml").write_text('[tool.wheelgap]\nextras = ["gpu"]\ngroups = ["dev"]\n')
+    assert main([str(tmp_path), "--only-group", "docs", "--json", "-t", "linux", "-p", "3.13"]) == 1
+    assert {p["name"] for p in json.loads(capsys.readouterr().out)["packages"]} == {"docstool"}
+    assert fake_pypi == []
+
+
+def test_online_lookups_only_include_selected_packages(fixtures, monkeypatch, capsys):
+    from wheelgap import cli
+
+    calls = []
+    monkeypatch.setattr(cli, "fill_all", lambda packages, **kwargs: calls.extend(p.name for p in packages))
+    assert main([str(fixtures / "uvselect"), "--no-dev", "--online", "--json", "-t", "linux", "-p", "3.13"]) == 0
+    assert set(calls) == {"app", "common", "library", "librarybase", "one"}
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    "selection, expected",
+    [
+        (UvSelection(extras=frozenset({"api"}), no_dev=True), {"oracle-app", "basepkg", "libpkg", "featurepkg"}),
+        (UvSelection(only_groups=frozenset({"docs"})), {"docspkg"}),
+        (UvSelection(all_extras=True), {"oracle-app", "basepkg", "libpkg", "featurepkg", "gpupkg", "devpkg"}),
+        (UvSelection(extras=frozenset({"empty"}), no_dev=True), {"oracle-app", "basepkg"}),
+    ],
+)
+def test_rooted_workspace_matches_uv_export(fixtures, selection, expected):
+    from wheelgap.check import reachable
+
+    # Generated offline with uv lock; expected selections independently checked with uv export
+    # --frozen --offline. Unreferenced workspace members must not become installation roots.
+    sources = load_inputs([str(fixtures / "uvworkspace")])
+    select_uv_dependencies(sources, selection)
+    source = sources[0]
+    target = build_targets(["3.13"], ["linux"])[0]
+    assert {source.packages[i].name for i in reachable(source, target)} == expected
+
+
+def test_selected_explain_keeps_group_provenance_for_extra_dependencies(fixtures, tmp_path):
+    lock = (fixtures / "uvselect" / "uv.lock").read_text()
+    # library is also a runtime dependency, but only the docs group activates its second extra.
+    lock = lock.replace('docs = [{ name = "docstool" }]', 'docs = [{ name = "library", extra = ["two"] }]')
+    (tmp_path / "uv.lock").write_text(lock)
+    sources = load_inputs([str(tmp_path)])
+    select_uv_dependencies(sources, UvSelection(groups=frozenset({"docs"}), no_dev=True))
+    target = build_targets(["3.13"], ["linux"])[0]
+    rows = {r.package.name: r for r in check(sources, [target])}
+    assert rows["one"].via[target] == ["app", "library", "one"]
+    assert rows["two"].via[target] == ["(docs group)", "library", "two"]
+    assert rows["three"].via[target] == ["(docs group)", "library", "two", "library", "three"]
+
+
+def test_virtual_workspace_keeps_member_roots(fixtures):
+    from wheelgap.check import reachable
+
+    source = load_inputs([str(fixtures / "uvvirtual")])[0]
+    target = build_targets(["3.13"], ["linux"])[0]
+    select_uv_dependencies([source], UvSelection(no_dev=True))
+    assert {source.packages[i].name for i in reachable(source, target)} == {
+        "basepkg",
+        "libpkg",
+        "featurepkg",
+        "gpupkg",
+        "devpkg",
+        "docspkg",
+        "unusedmember",
+    }
+    select_uv_dependencies([source], UvSelection(only_groups=frozenset({"docs"})))
+    assert {source.packages[i].name for i in reachable(source, target)} == {"docspkg"}
+
+
+def test_cli_repeatable_and_normalized_selectors(fixtures, capsys, fake_pypi):
+    assert (
+        main(
+            [
+                str(fixtures / "uvselect"),
+                "--extra",
+                "API",
+                "--extra",
+                "api",
+                "--group",
+                "docs",
+                "--group",
+                "dev",
+                "--json",
+                "-t",
+                "linux",
+                "-p",
+                "3.13",
+            ]
+        )
+        == 1
+    )
+    names = {p["name"] for p in json.loads(capsys.readouterr().out)["packages"]}
+    assert {"api", "devtool", "docstool", "two", "three"} <= names
+    assert not {"gpu", "unused", "winonly"} & names
+    assert fake_pypi == []
+
+
+def test_extra_target_markers_are_evaluated_for_each_python(fixtures, tmp_path):
+    lock = (fixtures / "uvselect" / "uv.lock").read_text()
+    lock = lock.replace(
+        'api = [{ name = "api",', 'api = [{ name = "gpu", marker = "python_version < \'3.13\'" }, { name = "api",'
+    )
+    (tmp_path / "uv.lock").write_text(lock)
+    sources = load_inputs([str(tmp_path)])
+    select_uv_dependencies(sources, UvSelection(extras=frozenset({"api"}), no_dev=True))
+    targets = build_targets(["3.12", "3.13"], ["linux"])
+    rows = {r.package.name: r for r in check(sources, targets)}
+    assert [s.value for s in rows["gpu"].results.values()] == ["source", "n/a"]
+
+
+def test_incomplete_edge_version_does_not_hide_a_dependency(fixtures, tmp_path):
+    lock = (fixtures / "uvselect" / "uv.lock").read_text()
+    lock = lock.replace(
+        '{ name = "library", extra = ["one"] }', '{ name = "library", version = "missing", extra = ["one"] }'
+    )
+    (tmp_path / "uv.lock").write_text(lock)
+    sources = load_inputs([str(tmp_path)])
+    select_uv_dependencies(sources, UvSelection(no_dev=True))
+    assert {r.package.name for r in check(sources, build_targets(["3.13"], ["linux"])) if r.needed} == {
+        "common",
+        "library",
+        "librarybase",
+        "one",
+    }
+
+
+def test_automatic_narrow_lock_rechecks_only_selected_packages(fixtures, tmp_path, monkeypatch, capsys):
+    from wheelgap import cli
+
+    lock = (
+        (fixtures / "uvselect" / "uv.lock")
+        .read_text()
+        .replace('requires-python = ">=3.11"', 'requires-python = "==3.12.*"')
+    )
+    (tmp_path / "uv.lock").write_text(lock)
+    calls = []
+
+    def recheck(packages, simple_index=None, read_cache=False, write_cache=False):
+        calls.extend(p.name for p in packages)
+        return 0, 0
+
+    monkeypatch.setattr(cli, "recheck_lock", recheck)
+    assert main([str(tmp_path), "--no-dev", "--json", "-t", "linux", "-p", "3.13"]) == 0
+    assert set(calls) == {"app", "common", "library", "librarybase", "one"}
+    assert "locked for Python ==3.12.*" in capsys.readouterr().err
+
+
+def test_offline_selection_ignores_unselected_missing_artifacts(fixtures, tmp_path, capsys, fake_pypi):
+    lock = (
+        (fixtures / "uvselect" / "uv.lock")
+        .read_text()
+        .replace('sdist = { url = "https://example.invalid/gpu-1.0.tar.gz" }', "")
+    )
+    (tmp_path / "uv.lock").write_text(lock, encoding="utf-8")
+    arguments = [str(tmp_path), "--offline", "--json", "-t", "linux", "-p", "3.13"]
+    assert main([*arguments, "--no-dev"]) == 0
+    assert "gpu" not in {p["name"] for p in json.loads(capsys.readouterr().out)["packages"]}
+    assert main(arguments) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert next(p for p in report["packages"] if p["name"] == "gpu")["results"]["linux-x86_64"] == "missing"
+    assert fake_pypi == []
+
+
+def test_online_selection_preserves_private_index_and_python_context(fixtures, tmp_path, monkeypatch, capsys):
+    from wheelgap import pypi
+
+    lock = (
+        (fixtures / "uvselect" / "uv.lock")
+        .read_text()
+        .replace(
+            'name = "common"\nversion = "1.0"\nsource = { registry = "https://pypi.org/simple" }',
+            'name = "common"\nversion = "1.0"\nsource = { registry = "https://private.example/simple" }',
+        )
+    )
+    (tmp_path / "uv.lock").write_text(lock, encoding="utf-8")
+    calls = []
+
+    def fill(package, python=None, read_cache=False, write_cache=False, pythons=()):
+        calls.append((package.name, pythons))
+
+    monkeypatch.setattr(pypi, "fill", fill)
+    assert main([str(tmp_path), "--online", "--no-dev", "--json", "-t", "linux", "-p", "3.13"]) == 0
+    assert set(calls) == {("library", ("3.13",)), ("librarybase", ("3.13",)), ("one", ("3.13",))}
+    report = capsys.readouterr()
+    assert "kept the locked files of 1 package from other indexes" in report.err
+    assert "common" in {p["name"] for p in json.loads(report.out)["packages"]}
+
+
+def test_offline_selection_skips_narrow_lock_recheck(fixtures, tmp_path, capsys, fake_pypi):
+    lock = (
+        (fixtures / "uvselect" / "uv.lock")
+        .read_text()
+        .replace('requires-python = ">=3.11"', 'requires-python = "==3.12.*"')
+    )
+    (tmp_path / "uv.lock").write_text(lock, encoding="utf-8")
+    assert main([str(tmp_path), "--offline", "--no-dev", "--json", "-t", "linux", "-p", "3.13"]) == 0
+    assert "weren't re-checked" in capsys.readouterr().err
+    assert fake_pypi == []
+
+
+def test_ignore_note_counts_packages_the_selection_leaves_out(fixtures, capsys, fake_pypi):
+    # devtool is in the lock but not installed with --no-dev: ignoring it isn't a typo.
+    main([str(fixtures / "uvselect"), "--no-dev", "--ignore", "devtool,nosuchpkg", "-t", "linux", "-p", "3.13"])
+    err = capsys.readouterr().err
+    assert "--ignore matches no package: nosuchpkg" in err
+    assert "devtool" not in err
+
+
+def test_ignore_note_counts_poetry_packages_the_selection_leaves_out(poetry_groups, capsys, fake_pypi):
+    # devonly is in the poetry.lock but not installed with --no-dev: ignoring it isn't a typo.
+    main([str(poetry_groups), "--no-dev", "--ignore", "devonly,nosuchpkg", "-t", "linux", "-p", "3.13"])
+    err = capsys.readouterr().err
+    assert "--ignore matches no package: nosuchpkg" in err
+    assert "devonly" not in err
+
+
+def test_configured_selection_leaves_other_inputs_alone(tmp_path, capsys, fake_pypi):
+    (tmp_path / "pyproject.toml").write_text('[tool.wheelgap]\nextras = ["api"]\ngroups = ["docs"]\n')
+    path = tmp_path / "requirements.txt"
+    path.write_text("purewheel==3.1\n")
+    assert main([str(path), "-t", "linux-x86_64", "-p", "3.13"]) == 0
+    assert "requires uv.lock" not in capsys.readouterr().err
+
+
+def test_selection_names_workspace_members_it_does_not_check(fixtures, capsys, fake_pypi):
+    args = [str(fixtures / "uvworkspace"), "-t", "linux", "-p", "3.13", "--json"]
+    main([*args, "--extra", "api", "--no-dev"])
+    err = capsys.readouterr().err
+    assert "workspace members outside it aren't checked" in err
+    assert "unusedmember" in err and "libpkg" not in err
+    main([*args, "--only-group", "docs"])
+    assert "workspace members" not in capsys.readouterr().err
+
+
+POETRY_GROUPS_LOCK = """\
+[[package]]
+name = "app-dep"
+version = "1.0"
+groups = ["main"]
+files = [{file = "app_dep-1.0-py3-none-any.whl", hash = "sha256:00"}]
+
+[[package]]
+name = "devonly"
+version = "1.0"
+groups = ["dev"]
+files = [{file = "devonly-1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "docstool"
+version = "1.0"
+groups = ["docs"]
+files = [{file = "docstool-1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "winonly"
+version = "1.0"
+groups = ["main", "dev"]
+markers = { main = "sys_platform == \\"win32\\"" }
+files = [{file = "winonly-1.0-py3-none-any.whl", hash = "sha256:00"}]
+
+[metadata]
+lock-version = "2.1"
+"""
+
+POETRY_GROUPS_PYPROJECT = """\
+[tool.poetry.group.dev.dependencies]
+devonly = "*"
+
+[tool.poetry.group.docs]
+optional = true
+
+[tool.poetry.group.docs.dependencies]
+docstool = "*"
+"""
+
+
+def _poetry_names(capsys, argv):
+    code = main([*argv, "--json", "-t", "linux-x86_64", "-p", "3.13"])
+    return code, {p["name"] for p in json.loads(capsys.readouterr().out)["packages"]}
+
+
+@pytest.fixture
+def poetry_groups(tmp_path):
+    (tmp_path / "poetry.lock").write_text(POETRY_GROUPS_LOCK, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(POETRY_GROUPS_PYPROJECT, encoding="utf-8")
+    return tmp_path
+
+
+def test_poetry_lock_no_dev_drops_a_dev_only_gap(poetry_groups, capsys, fake_pypi):
+    code, names = _poetry_names(capsys, [str(poetry_groups)])
+    assert code == 1 and {"app-dep", "devonly", "docstool"} <= names  # unchanged without a selector
+    code, names = _poetry_names(capsys, [str(poetry_groups), "--no-dev"])
+    # docs is optional in pyproject.toml, so Poetry doesn't install it unless asked for. Without dev, winonly
+    # keeps only main's win32 marker, so it isn't installed on Linux.
+    assert code == 0 and names == {"app-dep"}
+    assert fake_pypi == []
+
+
+def test_poetry_lock_group_adds_an_optional_group(poetry_groups, capsys, fake_pypi):
+    code, names = _poetry_names(capsys, [str(poetry_groups), "--no-dev", "--group", "docs"])
+    assert code == 1 and names == {"app-dep", "docstool"}
+
+
+def test_poetry_lock_only_group_keeps_only_it(poetry_groups, capsys, fake_pypi):
+    code, names = _poetry_names(capsys, [str(poetry_groups), "--only-group", "dev"])
+    assert code == 1 and names == {"devonly", "winonly"}
+    code, names = _poetry_names(capsys, [str(poetry_groups), "--only-group", "main"])
+    assert code == 0 and names == {"app-dep"}
+
+
+def test_poetry_lock_unknown_group_is_an_error(poetry_groups, capsys, fake_pypi):
+    assert main([str(poetry_groups), "--group", "nosuch"]) == 2
+    assert "unknown groups: nosuch" in capsys.readouterr().err
+
+
+POETRY_NO_DEV_LOCK = """\
+[[package]]
+name = "app-dep"
+version = "1.0"
+groups = ["main"]
+files = [{file = "app_dep-1.0-py3-none-any.whl", hash = "sha256:00"}]
+
+[metadata]
+lock-version = "2.1"
+"""
+
+
+@pytest.mark.parametrize(
+    ("pyproject", "argv"),
+    [
+        (None, ["--no-dev"]),
+        ("[tool.poetry.group.docs.dependencies]\n", ["--no-dev"]),
+        ("[tool.poetry.group.docs.dependencies]\n", ["--no-dev", "--group", "docs"]),
+        ("[tool.poetry.group.docs.dependencies]\n", ["--no-dev", "--only-group", "main"]),
+        ('[tool.wheelgap]\ngroups = ["docs"]\n\n[tool.poetry.group.docs.dependencies]\n', ["--no-dev"]),
+    ],
+)
+def test_poetry_lock_no_dev_without_a_dev_group_is_an_error(tmp_path, capsys, fake_pypi, pyproject, argv):
+    # Like `poetry install --without dev` (Poetry 2.5.1): "Group(s) not found: dev (via --without)".
+    (tmp_path / "poetry.lock").write_text(POETRY_NO_DEV_LOCK, encoding="utf-8")
+    if pyproject is not None:
+        (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    assert main([str(tmp_path), *argv]) == 2
+    err = capsys.readouterr().err
+    assert "Group(s) not found: dev (via --no-dev)" in err
+    assert ("no pyproject.toml beside it to declare one" in err) == (pyproject is None)
+    assert main([str(tmp_path), *argv[1:], "-t", "linux-x86_64", "-p", "3.13"]) == 0  # fine without --no-dev
+    assert fake_pypi == []
+
+
+@pytest.mark.parametrize(
+    "pyproject",
+    [
+        "[tool.poetry.dev-dependencies]\n",  # Poetry 2.5.1 accepts --without dev for each of these empty dev groups
+        "[tool.poetry.group.dev.dependencies]\n",
+        "[dependency-groups]\ndev = []\n",
+    ],
+)
+def test_poetry_lock_no_dev_with_an_empty_declared_dev_group(tmp_path, capsys, fake_pypi, pyproject):
+    (tmp_path / "poetry.lock").write_text(POETRY_NO_DEV_LOCK, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    code, names = _poetry_names(capsys, [str(tmp_path), "--no-dev"])
+    assert code == 0 and names == {"app-dep"}
+
+
+def test_poetry_lock_no_dev_with_a_dev_group_in_the_lock_only(poetry_groups, capsys, fake_pypi):
+    (poetry_groups / "pyproject.toml").unlink()  # the lock's own groups still say there's a dev group
+    code, names = _poetry_names(capsys, [str(poetry_groups), "--no-dev"])
+    assert code == 1 and names == {"app-dep", "docstool"}  # without pyproject.toml, docs isn't known to be optional
+
+
+def test_poetry_lock_unknown_extra_is_an_error(poetry_groups, capsys, fake_pypi):
+    # Like `poetry install --extras api`: "Extra [api] is not specified." This lock has no [extras] table.
+    assert main([str(poetry_groups), "--extra", "api"]) == 2
+    assert "unknown extras: api" in capsys.readouterr().err
+
+
+def test_poetry_lock_configured_groups_apply(poetry_groups, capsys, fake_pypi):
+    with (poetry_groups / "pyproject.toml").open("a", encoding="utf-8") as f:
+        f.write('\n[tool.wheelgap]\ngroups = ["docs"]\n')
+    code, names = _poetry_names(capsys, [str(poetry_groups), "--no-dev"])
+    assert code == 1 and names == {"app-dep", "docstool"}
+
+
+def test_poetry_1x_lock_rejects_group_selection(tmp_path, capsys, fake_pypi):
+    (tmp_path / "poetry.lock").write_text(
+        '[[package]]\nname = "app-dep"\nversion = "1.0"\ncategory = "main"\nfiles = []\n\n'
+        '[metadata]\nlock-version = "2.0"\n',
+        encoding="utf-8",
+    )
+    assert main([str(tmp_path), "--no-dev"]) == 2
+    assert "needs a poetry.lock from Poetry 2.x" in capsys.readouterr().err
+
+
+def test_poetry_lock_configured_extras_alone_select(poetry_groups, capsys, fake_pypi):
+    # An empty configured list selects no extras: Poetry's default groups, so the optional docs group is left out.
+    with (poetry_groups / "pyproject.toml").open("a", encoding="utf-8") as f:
+        f.write("\n[tool.wheelgap]\nextras = []\n")
+    code, names = _poetry_names(capsys, [str(poetry_groups)])
+    assert code == 1 and names == {"app-dep", "devonly", "winonly"}
+
+
+def test_poetry_lock_knows_empty_pep735_groups(poetry_groups, capsys, fake_pypi):
+    with (poetry_groups / "pyproject.toml").open("a", encoding="utf-8") as f:
+        f.write("\n[dependency-groups]\nType_Check = []\n")
+    code, names = _poetry_names(capsys, [str(poetry_groups), "--no-dev", "--group", "type-check"])
+    assert code == 0 and names == {"app-dep"}
+
+
+def test_poetry_1x_lock_ignores_configured_groups(tmp_path, capsys, fake_pypi):
+    (tmp_path / "poetry.lock").write_text(
+        '[[package]]\nname = "app-dep"\nversion = "1.0"\ncategory = "main"\n'
+        'files = [{file = "app_dep-1.0-py3-none-any.whl", hash = "sha256:00"}]\n\n'
+        '[[package]]\nname = "devonly"\nversion = "1.0"\ncategory = "dev"\n'
+        'files = [{file = "devonly-1.0.tar.gz", hash = "sha256:00"}]\n\n'
+        '[metadata]\nlock-version = "2.0"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text('[tool.wheelgap]\ngroups = ["docs"]\n', encoding="utf-8")
+    # No per-package groups to select by, so every package stays in.
+    code, names = _poetry_names(capsys, [str(tmp_path)])
+    assert code == 1 and names == {"app-dep", "devonly"}
+
+
+# Shaped like `poetry lock` output (Poetry 2.5.1) for a [project] with optional-dependencies s3, yaml (linux only),
+# Fancy_Name, both and an empty one: each package's markers say which extras need it. devtool and backport are also
+# in the dev group, through devrunner (and backport through s3lib), so pyproject.toml declares each name only once.
+POETRY_EXTRAS_LOCK = """\
+[[package]]
+name = "app-dep"
+version = "1.0"
+optional = false
+groups = ["main"]
+files = [{file = "app_dep-1.0-py3-none-any.whl", hash = "sha256:00"}]
+
+[[package]]
+name = "s3lib"
+version = "1.0"
+optional = true
+groups = ["main"]
+markers = "extra == \\"s3\\""
+files = [{file = "s3lib-1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "linuxyaml"
+version = "1.0"
+optional = true
+groups = ["main"]
+markers = "sys_platform == \\"linux\\" and extra == \\"yaml\\""
+files = [{file = "linuxyaml-1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "pretty"
+version = "1.0"
+optional = true
+groups = ["main"]
+markers = "extra == \\"fancy-name\\""
+files = [{file = "pretty-1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "shared"
+version = "1.0"
+optional = true
+groups = ["main"]
+markers = "extra == \\"s3\\" or extra == \\"both\\""
+files = [{file = "shared-1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "devtool"
+version = "1.0"
+optional = false
+groups = ["main", "dev"]
+markers = {main = "extra == \\"both\\""}
+files = [{file = "devtool-1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "backport"
+version = "1.0"
+optional = false
+groups = ["main", "dev"]
+markers = {main = "extra == \\"s3\\" and python_version < \\"3.11\\"", dev = "python_version < \\"3.11\\""}
+files = [{file = "backport-1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "devrunner"
+version = "1.0"
+optional = false
+groups = ["dev"]
+files = [{file = "devrunner-1.0-py3-none-any.whl", hash = "sha256:00"}]
+
+[extras]
+both = ["devtool", "shared"]
+empty = []
+fancy-name = ["pretty"]
+s3 = ["s3lib", "shared"]
+yaml = ["linuxyaml"]
+
+[metadata]
+lock-version = "2.1"
+python-versions = ">=3.10"
+"""
+
+POETRY_EXTRAS_PYPROJECT = """\
+[project]
+name = "app"
+version = "0"
+requires-python = ">=3.10"
+dependencies = ["app-dep"]
+
+[project.optional-dependencies]
+s3 = ["s3lib", "shared"]
+yaml = ["linuxyaml; sys_platform == 'linux'"]
+Fancy_Name = ["pretty"]
+both = ["shared", "devtool"]
+empty = []
+
+[tool.poetry]
+package-mode = false
+
+[tool.poetry.group.dev.dependencies]
+devrunner = "*"
+"""
+
+POETRY_EXTRAS_ALL = {"app-dep", "s3lib", "linuxyaml", "pretty", "shared", "devtool", "devrunner"}
+
+
+@pytest.fixture
+def poetry_extras(tmp_path):
+    (tmp_path / "poetry.lock").write_text(POETRY_EXTRAS_LOCK, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(POETRY_EXTRAS_PYPROJECT, encoding="utf-8")
+    return tmp_path
+
+
+def _names(capsys, argv, target="linux-x86_64", python="3.13"):
+    code = main([*argv, "--json", "-t", target, "-p", python])
+    out, err = capsys.readouterr()
+    report = json.loads(out)
+    return code, {p["name"] for p in report["packages"] if [*p["results"].values()] != ["n/a"]}, err
+
+
+# What `poetry install --dry-run` (Poetry 2.5.1) installs for the same options on a Poetry 2.5.1 lock of this shape,
+# plus what Poetry 2.0-2.2 may install too: linuxyaml's and backport's markers combine an extra with other conditions
+# (`sys_platform == "linux" and extra == "yaml"`), so they're kept for every extra, with a note when the extras
+# selected would have left them out.
+@pytest.mark.parametrize(
+    "args, expected, noted",
+    [
+        ([], POETRY_EXTRAS_ALL, None),  # no selector: every extra still counts
+        (["--no-dev"], {"app-dep", "linuxyaml"}, "linuxyaml, backport"),  # poetry install --without dev
+        (["--no-dev", "--extra", "s3"], {"app-dep", "s3lib", "shared", "linuxyaml"}, "linuxyaml kept"),
+        (["--no-dev", "--extra", "Fancy_Name"], {"app-dep", "pretty", "linuxyaml"}, "linuxyaml, backport"),
+        (["--no-dev", "--extra", "yaml"], {"app-dep", "linuxyaml"}, "backport kept"),
+        (["--no-dev", "--extra", "empty"], {"app-dep", "linuxyaml"}, "linuxyaml, backport"),
+        (["--no-dev", "--all-extras"], POETRY_EXTRAS_ALL - {"devrunner"}, None),
+        (["--extra", "both"], {"app-dep", "shared", "devtool", "devrunner", "linuxyaml"}, "linuxyaml, backport"),
+        (["--only-group", "main", "--extra", "both"], {"app-dep", "shared", "devtool", "linuxyaml"}, "linuxyaml"),
+        (["--only-group", "dev", "--extra", "s3"], {"devtool", "devrunner"}, None),  # extras need main
+    ],
+)
+def test_poetry_lock_extras_follow_poetry_install(poetry_extras, capsys, fake_pypi, args, expected, noted):
+    code, names, err = _names(capsys, [str(poetry_extras), *args])
+    assert names == expected and code == (1 if expected - {"app-dep", "devrunner"} else 0)
+    if noted is None:
+        assert "note" not in err
+    else:
+        assert f"note: poetry.lock: {noted}" in err and "kept for every extra" in err
+    assert fake_pypi == []
+
+
+def test_poetry_lock_mixed_markers_are_kept_for_every_extra(poetry_extras, capsys, fake_pypi):
+    # backport: main `extra == "s3" and python_version < "3.11"`, dev `python_version < "3.11"`. Its python_version
+    # still applies, but s3 isn't needed for it.
+    for args in (["--no-dev"], ["--no-dev", "--extra", "s3"], ["--extra", "both"]):
+        _, names, _ = _names(capsys, [str(poetry_extras), *args], python="3.10")
+        assert "backport" in names
+        _, names, _ = _names(capsys, [str(poetry_extras), *args])
+        assert "backport" not in names
+
+
+def test_poetry_lock_extras_keep_their_other_markers(poetry_extras, capsys, fake_pypi):
+    args = [str(poetry_extras), "--no-dev", "--json", "--extra", "yaml", "--extra", "s3"]
+    main([*args, "-t", "linux-x86_64,macos-arm64", "-p", "3.10", "-p", "3.13"])
+    results = {p["name"]: p["results"] for p in json.loads(capsys.readouterr().out)["packages"]}
+    # sys_platform == "linux" and python_version < "3.11" still apply.
+    assert results["linuxyaml"] == {
+        "3.10 linux-x86_64": "source",
+        "3.10 macos-arm64": "n/a",
+        "3.13 linux-x86_64": "source",
+        "3.13 macos-arm64": "n/a",
+    }
+    assert results["backport"] == {
+        "3.10 linux-x86_64": "source",
+        "3.10 macos-arm64": "source",
+        "3.13 linux-x86_64": "n/a",
+        "3.13 macos-arm64": "n/a",
+    }
+
+
+def test_poetry_lock_extras_leave_out_packages_no_selected_extra_needs(poetry_extras):
+    sources = load_inputs([str(poetry_extras)])
+    select_uv_dependencies(sources, UvSelection(extras=frozenset({"s3"}), no_dev=True))
+    (source,) = sources
+    packages = {p.name: p for p in source.packages}
+    assert set(packages) == {"app-dep", "s3lib", "shared", "backport", "linuxyaml"}
+    assert {"pretty", "devtool", "devrunner"} <= source.unselected_keys
+    # A selected extra decides s3lib and shared everywhere; linuxyaml keeps its marker, read with extras unknown.
+    assert packages["s3lib"].markers is None and packages["shared"].markers is None
+    assert packages["linuxyaml"].markers == ['sys_platform == "linux" and extra == "yaml"']
+
+
+def test_poetry_lock_package_counts_if_any_groups_extra_is_selected(tmp_path):
+    (tmp_path / "poetry.lock").write_text(
+        '[[package]]\nname = "twice"\nversion = "1.0"\ngroups = ["main", "docs"]\n'
+        'markers = {main = "extra == \\"a\\"", docs = "extra == \\"b\\""}\nfiles = []\n\n'
+        '[extras]\na = ["twice"]\nb = []\n\n[metadata]\nlock-version = "2.1"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "0"\n', encoding="utf-8")
+    for extras, kept in (({"a"}, True), ({"b"}, True), (set(), False)):
+        sources = load_inputs([str(tmp_path)])
+        select_uv_dependencies(sources, UvSelection(extras=frozenset(extras), groups=frozenset({"docs"})))
+        assert bool(sources[0].packages) is kept
+        assert not kept or sources[0].packages[0].markers is None
+
+
+def test_poetry_lock_extra_names_in_the_lock_are_normalized(poetry_extras):
+    lock = poetry_extras / "poetry.lock"
+    lock.write_text(lock.read_text(encoding="utf-8").replace("fancy-name = [", "Fancy_Name = ["), encoding="utf-8")
+    sources = load_inputs([str(poetry_extras)])
+    select_uv_dependencies(sources, UvSelection(extras=frozenset({"fancy-name"}), no_dev=True))
+    assert "pretty" in {p.name for p in sources[0].packages}
+
+
+def test_poetry_lock_ignore_note_counts_packages_extras_leave_out(poetry_extras, capsys, fake_pypi):
+    main([str(poetry_extras), "--no-dev", "--ignore", "s3lib,nosuchpkg", "-t", "linux", "-p", "3.13"])
+    err = capsys.readouterr().err
+    assert "--ignore matches no package: nosuchpkg" in err
+    assert "s3lib" not in err
+
+
+def test_poetry_lock_configured_extras_apply(poetry_extras, capsys, fake_pypi):
+    with (poetry_extras / "pyproject.toml").open("a", encoding="utf-8") as f:
+        f.write('\n[tool.wheelgap]\nextras = ["s3"]\n')
+    code, names, _ = _names(capsys, [str(poetry_extras), "--no-dev"])
+    assert code == 1 and names == {"app-dep", "s3lib", "shared", "linuxyaml"}
+    code, names, _ = _names(capsys, [str(poetry_extras), "--no-dev", "--extra", "fancy-name"])  # replaces them
+    assert code == 1 and names == {"app-dep", "pretty", "linuxyaml"}
+
+
+def test_poetry_lock_unknown_extra_names_the_lock(poetry_extras, capsys, fake_pypi):
+    assert main([str(poetry_extras), "--extra", "s3", "--extra", "nope"]) == 2
+    assert "poetry.lock: unknown extras: nope" in capsys.readouterr().err
+
+
+def test_poetry_1x_lock_rejects_extras(tmp_path, capsys, fake_pypi):
+    (tmp_path / "poetry.lock").write_text(
+        '[[package]]\nname = "app-dep"\nversion = "1.0"\ncategory = "main"\nfiles = []\n\n'
+        '[extras]\ns3 = ["app-dep"]\n\n[metadata]\nlock-version = "2.0"\n',
+        encoding="utf-8",
+    )
+    assert main([str(tmp_path), "--extra", "s3"]) == 2
+    assert "needs a poetry.lock from Poetry 2.x" in capsys.readouterr().err
+
+
+def test_only_group_with_extra_is_still_an_error_with_a_uv_lock_input(fixtures, poetry_extras, capsys, fake_pypi):
+    assert main([str(fixtures / "uvselect"), str(poetry_extras), "--only-group", "main", "--extra", "s3"]) == 2
+    assert "cannot be combined with --extra or --all-extras for uv.lock inputs" in capsys.readouterr().err
+
+
+def test_selection_names_the_input_it_does_not_apply_to(poetry_extras, capsys, fake_pypi):
+    (poetry_extras / "requirements.txt").write_text("purewheel==3.1\n", encoding="utf-8")
+    assert main([str(poetry_extras / "poetry.lock"), str(poetry_extras / "requirements.txt"), "--no-dev"]) == 2
+    err = capsys.readouterr().err
+    assert "requires uv.lock, Poetry 2.x poetry.lock or pdm.lock inputs (not requirements.txt)" in err
+
+
+# Locks from Poetry 2.5.1 that Poetry 2.0-2.2 (installer.re-resolve) install more of than their markers say. Each
+# has a name that is in an extra and declared elsewhere in pyproject.toml; extras then leave nothing out.
+LOST_MARKER_LOCK = """\
+[[package]]
+name = "requests"
+version = "2.32.3"
+optional = true
+groups = ["main"]
+markers = "extra == \\"s3\\""
+files = [{file = "requests-2.32.3.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "certifi"
+version = "2024.8.30"
+optional = true
+groups = ["main"]
+markers = "extra == \\"s3\\""
+files = [{file = "certifi-2024.8.30.tar.gz", hash = "sha256:00"}]
+
+[extras]
+s3 = ["requests"]
+
+[metadata]
+lock-version = "2.1"
+"""
+
+LEGACY_EXTRAS_LOCK = """\
+[[package]]
+name = "attrs"
+version = "26.1.0"
+optional = true
+groups = ["main"]
+markers = "extra == \\"c\\""
+files = [{file = "attrs-26.1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "colorama"
+version = "0.4.6"
+optional = false
+groups = ["main"]
+markers = "sys_platform == \\"darwin\\" and extra == \\"c\\""
+files = [{file = "colorama-0.4.6.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "six"
+version = "1.17.0"
+optional = false
+groups = ["main"]
+markers = "extra == \\"s\\""
+files = [{file = "six-1.17.0.tar.gz", hash = "sha256:00"}]
+
+[extras]
+c = ["attrs", "colorama"]
+s = ["six"]
+
+[metadata]
+lock-version = "2.1"
+"""
+
+GROUP_AND_EXTRA_LOCK = """\
+[[package]]
+name = "idna"
+version = "3.10"
+optional = false
+groups = ["main", "dev"]
+markers = {main = "extra == \\"b\\"", dev = "sys_platform == \\"win32\\""}
+files = [{file = "idna-3.10.tar.gz", hash = "sha256:00"}]
+
+[extras]
+b = ["idna"]
+
+[metadata]
+lock-version = "2.1"
+"""
+
+TWO_EXTRAS_LOCK = """\
+[[package]]
+name = "six"
+version = "1.17.0"
+optional = true
+groups = ["main"]
+markers = "python_version < \\"3.13\\" and extra == \\"a\\" or python_version >= \\"3.13\\" and extra == \\"b\\""
+files = [{file = "six-1.17.0.tar.gz", hash = "sha256:00"}]
+
+[extras]
+a = ["six"]
+b = ["six"]
+
+[metadata]
+lock-version = "2.1"
+"""
+
+LEGACY = '[tool.poetry]\npackage-mode = false\n\n[tool.poetry.dependencies]\npython = ">=3.10"\n'
+
+
+@pytest.mark.parametrize(
+    "lock, pyproject, args, python, expected, named",
+    [
+        # 1. No pyproject.toml beside the lock: nothing shows how the extras are declared. Poetry 2.2.1 installs
+        # requests and certifi on macOS, from `requests; sys_platform == 'darwin'` plus s3 = ["requests"].
+        (
+            LOST_MARKER_LOCK,
+            None,
+            ["--only-group", "main"],
+            "3.13",
+            {"requests", "certifi"},
+            "no pyproject.toml beside it",
+        ),
+        (
+            LOST_MARKER_LOCK,
+            '[project]\nname = "x"\nversion = "0"\ndependencies = ["requests; sys_platform == \'darwin\'"]\n\n'
+            '[project.optional-dependencies]\ns3 = ["requests"]\n',
+            ["--only-group", "main"],
+            "3.13",
+            {"requests", "certifi"},
+            "requests in an extra",
+        ),
+        # 2. Legacy non-optional dependencies listed in [tool.poetry.extras]: Poetry 2.2.1 installs six and colorama.
+        (
+            LEGACY_EXTRAS_LOCK,
+            LEGACY + 'six = "*"\nattrs = { version = "*", optional = true }\n\n[tool.poetry.extras]\ns = ["six"]\n',
+            ["--only-group", "main"],
+            "3.13",
+            {"attrs", "colorama", "six"},
+            "six in an extra",
+        ),
+        (
+            LEGACY_EXTRAS_LOCK,
+            LEGACY + 'colorama = { version = "*", platform = "darwin" }\nattrs = { version = "*", optional = true }\n\n'
+            '[tool.poetry.extras]\nc = ["colorama", "attrs"]\n',
+            ["--only-group", "main"],
+            "3.13",
+            {"attrs", "colorama", "six"},
+            "colorama in an extra",
+        ),
+        # 3. In an extra and in a group with a marker: Poetry 2.0.1-2.2.1 install idna on macOS.
+        (
+            GROUP_AND_EXTRA_LOCK,
+            '[project]\nname = "x"\nversion = "0"\n\n[project.optional-dependencies]\nb = ["idna"]\n\n'
+            '[tool.poetry.group.dev.dependencies]\nidna = { version = "*", markers = "sys_platform == \'win32\'" }\n',
+            ["--group", "dev"],
+            "3.13",
+            {"idna"},
+            "idna in an extra",
+        ),
+        # 4. The same name in two extras, split by python_version: Poetry 2.2.1 `-E b` installs six on 3.12.
+        (
+            TWO_EXTRAS_LOCK,
+            '[project]\nname = "x"\nversion = "0"\n\n[project.optional-dependencies]\n'
+            "a = [\"six; python_version < '3.13'\"]\nb = [\"six; python_version >= '3.13'\"]\n",
+            ["--extra", "b"],
+            "3.12",
+            {"six"},
+            "six in an extra",
+        ),
+    ],
+)
+def test_poetry_lock_extras_leave_nothing_out_when_poetry_versions_disagree(
+    tmp_path, capsys, fake_pypi, lock, pyproject, args, python, expected, named
+):
+    (tmp_path / "poetry.lock").write_text(lock, encoding="utf-8")
+    if pyproject is not None:
+        (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    code, names, err = _names(capsys, [str(tmp_path), *args], target="macos-arm64", python=python)
+    assert code == 1 and names == expected
+    assert named in err and "extras leave no package out of this lock" in err
+    if pyproject is not None and "extras" in pyproject:
+        # The configured form too: extras = [] selects no extras.
+        (tmp_path / "pyproject.toml").write_text(pyproject + "\n[tool.wheelgap]\nextras = []\n", encoding="utf-8")
+        _, names, _ = _names(capsys, [str(tmp_path)], target="macos-arm64", python=python)
+        assert names == expected
+
+
+@pytest.mark.parametrize(
+    "pyproject, expected",
+    [
+        ('[project.optional-dependencies]\na = ["six"]\nb = ["six"]\nall = ["six", "attrs"]\n', []),  # locks right
+        ("[project.optional-dependencies]\na = [\"six; os_name == 'nt'\"]\nb = [\"six; os_name == 'nt'\"]\n", ["six"]),
+        ('[project.optional-dependencies]\na = ["six"]\nb = ["six>=1"]\n', ["six"]),
+        ('[project.optional-dependencies]\nx = ["requests"]\ny = ["requests[socks]"]\n', ["requests"]),
+        (
+            '[project.optional-dependencies]\nx = ["requests"]\n'
+            'y = ["requests @ https://files.example/requests-1.0.tar.gz"]\n',
+            ["requests"],
+        ),
+        ("[project.optional-dependencies]\na = [\"six; os_name == 'nt'\"]\n", []),  # one entry: locked right
+        ('[project]\ndependencies = ["six"]\n\n[project.optional-dependencies]\na = ["six"]\n', ["six"]),
+        (
+            '[project.optional-dependencies]\na = ["six"]\n\n[tool.poetry.dependencies]\nsix = { optional = true }\n',
+            ["six"],
+        ),
+        ('[project.optional-dependencies]\na = ["six"]\n\n[tool.poetry.group.lint.dependencies]\nSix = "*"\n', ["six"]),
+        ('[project.optional-dependencies]\na = ["six"]\n\n[tool.poetry.dev-dependencies]\nsix = "*"\n', ["six"]),
+        (
+            '[project.optional-dependencies]\na = ["six"]\n\n[dependency-groups]\ndev = ["six; os_name == \'nt\'"]\n',
+            ["six"],
+        ),
+        # Legacy: an optional table is the extra's own declaration, with or without a condition.
+        (LEGACY + 'six = { version = "*", optional = true }\n\n[tool.poetry.extras]\na = ["six"]\nb = ["six"]\n', []),
+        (
+            LEGACY
+            + 'six = { version = "*", optional = true, python = "<3.13" }\n\n[tool.poetry.extras]\na = ["six"]\n',
+            [],
+        ),
+        (
+            LEGACY + 'six = { version = "*", optional = true, markers = "os_name == \'nt\'" }\n\n'
+            '[tool.poetry.extras]\na = ["six"]\nb = ["six"]\n',
+            ["six"],
+        ),
+        (
+            LEGACY + 'six = [{ version = "<2", optional = true, python = "<3.13" }, '
+            '{ version = ">=2", optional = true, python = ">=3.13" }]\n\n[tool.poetry.extras]\na = ["six"]\n',
+            ["six"],
+        ),
+        (LEGACY + 'six = "*"\n\n[tool.poetry.extras]\na = ["six"]\n', ["six"]),
+        (LEGACY + 'six = { version = "*", platform = "darwin" }\n\n[tool.poetry.extras]\na = ["six"]\n', ["six"]),
+        (LEGACY + 'six = "*"\n', []),  # in no extra
+        # A legacy optional dependency with a condition, in two extras.
+        (
+            LEGACY + 'six = { version = "*", optional = true, python = "<3.13" }\n\n'
+            '[tool.poetry.extras]\na = ["six"]\nb = ["six"]\n',
+            ["six"],
+        ),
+        (
+            LEGACY + 'six = { version = "*", optional = true, platform = "darwin" }\n\n'
+            '[tool.poetry.extras]\na = ["six"]\nb = ["six"]\n',
+            ["six"],
+        ),
+        # Names are normalized everywhere: Typing_Extensions and typing.extensions are one package.
+        (
+            '[project]\ndependencies = ["typing.extensions"]\n\n'
+            '[project.optional-dependencies]\na = ["Typing_Extensions"]\n',
+            ["typing-extensions"],
+        ),
+        ('[project.optional-dependencies]\na = ["Typing_Extensions"]\nb = ["typing.extensions"]\n', []),
+        (
+            '[project.optional-dependencies]\na = ["Typing_Extensions"]\n\n'
+            '[tool.poetry.group.dev.dependencies]\n"typing.extensions" = "*"\n',
+            ["typing-extensions"],
+        ),
+        (
+            '[project.optional-dependencies]\na = ["Typing_Extensions"]\n\n'
+            '[dependency-groups]\ndev = ["typing.extensions"]\n',
+            ["typing-extensions"],
+        ),
+        (
+            '[project.optional-dependencies]\na = ["Typing_Extensions"]\n\n'
+            '[tool.poetry.dependencies]\n"typing.extensions" = "*"\n',
+            ["typing-extensions"],
+        ),
+        (
+            LEGACY + 'Typing_Extensions = { version = "*", optional = true }\n\n'
+            '[tool.poetry.extras]\na = ["typing.extensions"]\nb = ["typing-extensions"]\n',
+            [],
+        ),
+        (
+            LEGACY + 'Typing_Extensions = "*"\n\n[tool.poetry.extras]\na = ["typing.extensions"]\n',
+            ["typing-extensions"],
+        ),
+    ],
+)
+def test_poetry_extras_declared_elsewhere(pyproject, expected):
+    assert _poetry_extras_declared_elsewhere(tomllib.loads(pyproject)) == (expected, [])
+
+
+@pytest.mark.parametrize(
+    "marker, decided",
+    [
+        # Only extra comparisons on the project's extras: the selection decides them.
+        ('extra == "a" or extra == "b"', (True, False)),
+        ('extra == "a" and extra == "b"', (True, False)),  # `extra` is the set of extras selected
+        ('extra != "a"', (False, False)),
+        ('extra == "c"', (False, False)),
+        ('"c" == extra', (False, False)),
+        ('extra == "Fancy_Name"', (False, False)),  # normalized: fancy-name, not selected
+        ('(extra == "c" or extra == "a") and extra != "b"', (False, False)),
+        ('(extra == "c" or extra == "a") and extra == "b"', (True, False)),
+        # Anything else is evaluated per target with extras unknown, noting whether the selection rules one out.
+        ('sys_platform == "win32" or extra == "c"', (None, True)),
+        ('sys_platform == "win32" or extra == "a"', (None, False)),
+        ('sys_platform == "win32" and extra == "b" or extra == "c"', (None, True)),
+        ('python_version < "3.11"', (None, False)),
+        ('extra == "other"', (None, False)),  # not one of the project's extras
+        ('"a" in extra', (None, False)),
+        ("extra == sys_platform", (None, False)),
+        ("not a marker ((", (None, False)),
+    ],
+)
+def test_poetry_extras_decide(marker, decided):
+    extras = (frozenset({"a", "b", "c", "fancy-name"}), frozenset({"a", "b"}))
+    assert poetry_extras_decide(marker, extras) == decided
+
+
+def test_poetry_extras_decide_keeps_a_marker_when_packaging_changes(monkeypatch):
+    monkeypatch.setattr(check_module, "_evaluate3", lambda *a, **k: 1 / 0)
+    assert poetry_extras_decide('extra == "c"', (frozenset({"c"}), frozenset())) == (None, False)
+
+
+# Poetry 2.5.1 locks whose markers mix an extra with other conditions, where Poetry 2.0-2.2 (default settings) install
+# a package the markers leave out without the extra: `uvx poetry@2.2.1 install --dry-run --no-root` on macOS, Python
+# 3.12. Poetry 2.5.1 installs none of these packages, so wheelgap reports a superset of both.
+def _lock(*packages: tuple[str, str | None], extras: str) -> str:
+    out = ""
+    for name, markers in packages:
+        out += f'[[package]]\nname = "{name}"\nversion = "1.0"\ngroups = ["main"]\n'
+        if markers is not None:
+            out += f"markers = {markers}\n"
+        out += f'files = [{{file = "{name}-1.0.tar.gz", hash = "sha256:00"}}]\n\n'
+    return out + f'[extras]\n{extras}\n\n[metadata]\nlock-version = "2.1"\n'
+
+
+EXTRA_A = '"extra == \\"a\\""'
+PEP621 = '[project]\nname = "x"\nversion = "0"\nrequires-python = ">=3.10"\n'
+
+
+@pytest.mark.parametrize(
+    "lock, pyproject, args, expected",
+    [
+        # B1: Poetry 2.2.1 `--only main` installs idna and urllib3.
+        (
+            _lock(
+                ("certifi", EXTRA_A),
+                ("idna", '"sys_platform == \\"win32\\" or extra == \\"a\\""'),
+                ("requests", EXTRA_A),
+                ("urllib3", '"python_version == \\"3.10\\" or extra == \\"a\\""'),
+                extras='a = ["requests"]',
+            ),
+            PEP621 + "dependencies = [\"urllib3; python_version < '3.11'\", \"idna; sys_platform == 'win32'\"]\n\n"
+            '[project.optional-dependencies]\na = ["requests"]\n',
+            ["--only-group", "main"],
+            {"idna", "urllib3"},
+        ),
+        # B2: legacy; Poetry 2.2.1 installs idna.
+        (
+            _lock(
+                ("certifi", EXTRA_A),
+                ("idna", '"extra == \\"a\\" or sys_platform == \\"win32\\""'),
+                ("requests", EXTRA_A),
+                extras='a = ["requests"]',
+            ),
+            LEGACY + 'requests = { version = "*", optional = true }\n'
+            'idna = { version = "*", markers = "sys_platform == \'win32\'" }\n\n'
+            '[tool.poetry.extras]\na = ["requests"]\n',
+            ["--only-group", "main"],
+            {"idna"},
+        ),
+        # B3: a group dependency with a marker that the extra reaches; Poetry 2.2.1 installs pysocks.
+        (
+            _lock(
+                ("requests", EXTRA_A),
+                ("pysocks", '{main = "extra == \\"a\\"", dev = "sys_platform == \\"win32\\""}'),
+                extras='a = ["requests"]',
+            ).replace(
+                'name = "pysocks"\nversion = "1.0"\ngroups = ["main"]',
+                'name = "pysocks"\nversion = "1.0"\ngroups = ["main", "dev"]',
+            ),
+            PEP621
+            + '\n[project.optional-dependencies]\na = ["requests[socks]"]\n\n[tool.poetry.group.dev.dependencies]\n'
+            'pysocks = { version = "*", markers = "sys_platform == \'win32\'" }\n',
+            ["--group", "dev"],
+            {"pysocks"},
+        ),
+        # B4: Poetry 2.2.1 `-E b` installs urllib3.
+        (
+            _lock(
+                ("requests", EXTRA_A),
+                ("urllib3", '"sys_platform == \\"win32\\" and extra == \\"b\\" or extra == \\"a\\""'),
+                extras='a = ["requests"]\nb = ["urllib3"]',
+            ),
+            PEP621
+            + '\n[project.optional-dependencies]\na = ["requests"]\nb = ["urllib3; sys_platform == \'win32\'"]\n',
+            ["--extra", "b"],
+            {"urllib3"},
+        ),
+        # S2: urllib3 in an extra, reached only through `requests; python_version < '3.11'`. Neither Poetry installs
+        # it on 3.12, but its marker has B1's shape, so it's kept too.
+        (
+            _lock(
+                ("requests", '"python_version == \\"3.10\\""'),
+                ("urllib3", '"python_version == \\"3.10\\" or extra == \\"net\\""'),
+                extras='net = ["urllib3"]',
+            ),
+            PEP621 + "dependencies = [\"requests; python_version < '3.11'\"]\n\n"
+            '[project.optional-dependencies]\nnet = ["urllib3"]\n',
+            ["--only-group", "main"],
+            {"urllib3"},
+        ),
+    ],
+)
+def test_poetry_lock_mixed_extra_markers_report_a_superset(
+    tmp_path, capsys, fake_pypi, lock, pyproject, args, expected
+):
+    (tmp_path / "poetry.lock").write_text(lock, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    code, names, err = _names(capsys, [str(tmp_path), *args], target="macos-arm64", python="3.12")
+    assert code == 1 and names == expected
+    assert f"note: poetry.lock: {', '.join(sorted(expected))} kept for every extra" in err
+
+
+def test_poetry_lock_unconditional_dependency_an_extra_reaches_needs_no_note(tmp_path, capsys, fake_pypi):
+    # S1: `dependencies = ["idna"]` and a = ["requests"], which depends on idna: both Poetry versions install idna only.
+    lock = _lock(("certifi", EXTRA_A), ("idna", None), ("requests", EXTRA_A), extras='a = ["requests"]')
+    (tmp_path / "poetry.lock").write_text(lock, encoding="utf-8")
+    pyproject = PEP621 + 'dependencies = ["idna"]\n\n[project.optional-dependencies]\na = ["requests"]\n'
+    (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    code, names, err = _names(capsys, [str(tmp_path), "--only-group", "main"], target="macos-arm64", python="3.12")
+    assert names == {"idna"} and "note" not in err
+
+
+def test_poetry_lock_without_extras_or_pyproject_prints_no_note(tmp_path, capsys, fake_pypi):
+    lock = _lock(("app-dep", None), extras="").replace("[extras]\n\n", "")
+    (tmp_path / "poetry.lock").write_text(lock, encoding="utf-8")
+    code, names, err = _names(capsys, [str(tmp_path), "--only-group", "main"], target="macos-arm64", python="3.12")
+    assert names == {"app-dep"} and "note" not in err
+
+
+# macpkg is in extra x, and the dev group reaches it (through macwrapper) only on macOS.
+MIXED_GROUPS_LOCK = """\
+[[package]]
+name = "macwrapper"
+version = "1.0"
+groups = ["dev"]
+files = [{file = "macwrapper-1.0-py3-none-any.whl", hash = "sha256:00"}]
+
+[[package]]
+name = "macpkg"
+version = "1.0"
+groups = ["main", "dev"]
+markers = {main = "extra == \\"x\\"", dev = "sys_platform == \\"darwin\\""}
+files = [{file = "macpkg-1.0.tar.gz", hash = "sha256:00"}]
+
+[extras]
+x = ["macpkg"]
+
+[metadata]
+lock-version = "2.1"
+python-versions = ">=3.10"
+"""
+
+
+# dev needs macpkg only on macOS, and main only for the unselected extra x: B3's lock marker in
+# test_poetry_lock_mixed_extra_markers_report_a_superset, where Poetry 2.2.1 installs the package everywhere. So it's
+# kept on every target, with the note, a superset of both Poetry versions.
+@pytest.mark.parametrize(
+    "args, target, kept, note",
+    [
+        (["--group", "dev"], "macos-arm64", True, True),
+        (["--group", "dev"], "linux-x86_64", True, True),
+        (["--extra", "x"], "linux-x86_64", True, False),  # the selected extra installs it everywhere
+        (["--no-dev"], "macos-arm64", False, False),  # only main's marker, which x alone decides
+    ],
+)
+def test_poetry_lock_false_extra_marker_beside_a_platform_marker_is_kept(
+    tmp_path, capsys, fake_pypi, args, target, kept, note
+):
+    (tmp_path / "poetry.lock").write_text(MIXED_GROUPS_LOCK, encoding="utf-8")
+    pyproject = PEP621 + '\n[project.optional-dependencies]\nx = ["macpkg"]\n\n'
+    pyproject += '[tool.poetry.group.dev.dependencies]\nmacwrapper = "*"\n'
+    (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    _, names, err = _names(capsys, [str(tmp_path), *args], target=target, python="3.13")
+    assert ("macpkg" in names) is kept
+    assert ("kept for every extra" in err) is note, err
+
+
+def test_poetry_lock_selected_extra_in_one_group_needs_no_note(tmp_path, capsys, fake_pypi):
+    # dev's marker would rule out the unselected extra y, but the selected x installs macpkg everywhere anyway.
+    lock = MIXED_GROUPS_LOCK.replace('sys_platform == \\"darwin\\"', 'sys_platform == \\"darwin\\" or extra == \\"y\\"')
+    (tmp_path / "poetry.lock").write_text(lock.replace('x = ["macpkg"]', 'x = ["macpkg"]\ny = []'), encoding="utf-8")
+    pyproject = PEP621 + '\n[project.optional-dependencies]\nx = ["macpkg"]\ny = []\n\n'
+    pyproject += '[tool.poetry.group.dev.dependencies]\nmacwrapper = "*"\n'
+    (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    _, names, err = _names(capsys, [str(tmp_path), "--extra", "x"], target="linux-x86_64", python="3.13")
+    assert "macpkg" in names and "note" not in err
+
+
+def test_poetry_lock_unreadable_requirement_leaves_nothing_out(poetry_extras, capsys, fake_pypi):
+    pyproject = poetry_extras / "pyproject.toml"
+    pyproject.write_text(POETRY_EXTRAS_PYPROJECT.replace('"app-dep"]', '"app-dep", "not a requirement (("]'), "utf-8")
+    assert _poetry_extras_declared_elsewhere(tomllib.loads(pyproject.read_text("utf-8"))) == (
+        [],
+        ["not a requirement (("],
+    )
+    code, names, err = _names(capsys, [str(poetry_extras), "--no-dev"])
+    assert names == POETRY_EXTRAS_ALL - {"devrunner"}
+    assert "pyproject.toml has requirements wheelgap can't read (not a requirement (()" in err
+
+
+def test_configured_extras_leave_a_pdm_lock_as_it_is(tmp_path, capsys, fake_pypi):
+    # devonly's dev group isn't in [metadata] groups: a group selection would leave it out, configured extras don't.
+    (tmp_path / "pdm.lock").write_text(
+        '[metadata]\ngroups = ["default"]\nstrategy = ["inherit_metadata"]\nlock_version = "4.5.0"\n\n'
+        '[[package]]\nname = "devonly"\nversion = "1.0"\ngroups = ["dev"]\n'
+        'files = [{file = "devonly-1.0.tar.gz", hash = "sha256:00"}]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text('[tool.wheelgap]\nextras = ["api"]\n', encoding="utf-8")
+    code, names, _ = _names(capsys, [str(tmp_path)])
+    assert code == 1 and names == {"devonly"}
+
+
+# Shaped like `pdm lock -G docs` output (PDM 2.29): [metadata] groups lists every locked group, including the
+# optional-dependencies group docs and the empty dev group lint; Plugins is declared but wasn't locked.
+PDM_GROUPS_LOCK = """\
+[metadata]
+groups = ["default", "dev", "docs", "lint"]
+strategy = ["inherit_metadata"]
+lock_version = "4.5.1"
+content_hash = "sha256:00"
+
+[[metadata.targets]]
+requires_python = ">=3.9"
+
+[[package]]
+name = "app-dep"
+version = "1.0"
+groups = ["default"]
+files = [{file = "app_dep-1.0-py3-none-any.whl", hash = "sha256:00"}]
+
+[[package]]
+name = "devonly"
+version = "1.0"
+groups = ["dev"]
+files = [{file = "devonly-1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "docstool"
+version = "1.0"
+groups = ["docs"]
+files = [{file = "docstool-1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "shared"
+version = "1.0"
+groups = ["dev"]
+files = [{file = "shared-1.0.tar.gz", hash = "sha256:00"}]
+
+[[package]]
+name = "shared"
+version = "1.0"
+extras = ["toml"]
+groups = ["default"]
+files = [{file = "shared-1.0.tar.gz", hash = "sha256:00"}]
+"""
+
+PDM_GROUPS_PYPROJECT = """\
+[project]
+name = "app"
+version = "0"
+dependencies = ["app-dep", "shared[toml]"]
+
+[project.optional-dependencies]
+docs = ["docstool"]
+Plugins = ["plugintool"]
+
+[dependency-groups]
+dev = ["devonly", "shared"]
+lint = []
+"""
+
+PDM_ALL = {"app-dep", "devonly", "docstool", "shared"}
+
+
+@pytest.fixture
+def pdm_groups(tmp_path):
+    (tmp_path / "pdm.lock").write_text(PDM_GROUPS_LOCK, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(PDM_GROUPS_PYPROJECT, encoding="utf-8")
+    return tmp_path
+
+
+def test_pdm_lock_no_dev_drops_a_dev_only_gap(pdm_groups, capsys, fake_pypi):
+    code, names = _poetry_names(capsys, [str(pdm_groups)])
+    assert code == 1 and names == PDM_ALL  # unchanged without a selector
+    code, names = _poetry_names(capsys, [str(pdm_groups), "--no-dev"])
+    # Like `pdm install --without dev`: every other locked group stays, so docstool (the locked optional group
+    # docs) does too. shared stays: its shared[toml] entry is in the default group.
+    assert code == 1 and names == {"app-dep", "docstool", "shared"}
+    assert fake_pypi == []
+
+
+def test_pdm_lock_group_must_be_locked(pdm_groups, capsys, fake_pypi):
+    # docs is locked, so it's already checked; naming it doesn't change anything.
+    code, names = _poetry_names(capsys, [str(pdm_groups), "--no-dev", "--group", "docs"])
+    assert code == 1 and names == {"app-dep", "docstool", "shared"}
+    # Plugins is in pyproject.toml but not in the lock: PDM refuses to install it.
+    assert main([str(pdm_groups), "--group", "plugins"]) == 2
+    err = capsys.readouterr().err
+    assert "groups not in the lock: plugins" in err and "pdm lock -G plugins" in err
+
+
+def test_pdm_lock_only_group_keeps_only_it(pdm_groups, capsys, fake_pypi):
+    code, names = _poetry_names(capsys, [str(pdm_groups), "--only-group", "dev"])
+    assert code == 1 and names == {"devonly", "shared"}
+    code, names = _poetry_names(capsys, [str(pdm_groups), "--only-group", "default"])
+    assert code == 1 and names == {"app-dep", "shared"}
+    # lint is locked but empty: a known group that selects nothing, without needing pyproject.toml.
+    (pdm_groups / "pyproject.toml").unlink()
+    code, names = _poetry_names(capsys, [str(pdm_groups), "--only-group", "lint"])
+    assert code == 0 and names == set()
+
+
+def test_pdm_lock_unknown_group_is_an_error(pdm_groups, capsys, fake_pypi):
+    assert main([str(pdm_groups), "--group", "nosuch"]) == 2
+    assert "unknown groups: nosuch" in capsys.readouterr().err
+
+
+def test_pdm_lock_rejects_extras(pdm_groups, capsys, fake_pypi):
+    assert main([str(pdm_groups), "--extra", "docs"]) == 2
+    assert "pdm.lock supports groups only" in capsys.readouterr().err
+
+
+def test_pdm_lock_configured_groups_keep_locked_optional_groups(pdm_groups, capsys, fake_pypi):
+    with (pdm_groups / "pyproject.toml").open("a", encoding="utf-8") as f:
+        f.write('\n[tool.wheelgap]\ngroups = ["dev"]\n')
+    code, names = _poetry_names(capsys, [str(pdm_groups)])
+    assert code == 1 and names == PDM_ALL
+    code, names = _poetry_names(capsys, [str(pdm_groups), "--no-dev"])
+    assert code == 1 and names == {"app-dep", "docstool", "shared"}
+
+
+def test_pdm_lock_configured_extras_select_nothing(pdm_groups, capsys, fake_pypi):
+    # Configured extras apply to uv.lock inputs only: they neither filter a pdm.lock nor make it an error.
+    with (pdm_groups / "pyproject.toml").open("a", encoding="utf-8") as f:
+        f.write('\n[tool.wheelgap]\nextras = ["docs"]\n')
+    code, names = _poetry_names(capsys, [str(pdm_groups)])
+    assert code == 1 and names == PDM_ALL
+
+
+def test_ignore_note_counts_pdm_packages_the_selection_leaves_out(pdm_groups, capsys, fake_pypi):
+    # devonly is in the pdm.lock but not installed with --no-dev: ignoring it isn't a typo.
+    main([str(pdm_groups), "--no-dev", "--ignore", "devonly,nosuchpkg", "-t", "linux", "-p", "3.13"])
+    err = capsys.readouterr().err
+    assert "--ignore matches no package: nosuchpkg" in err
+    assert "devonly" not in err
+
+
+def test_pdm_lock_without_inherit_metadata(pdm_groups, capsys, fake_pypi):
+    # Without inherit_metadata in its strategy, PDM doesn't go by the package groups.
+    lock = pdm_groups / "pdm.lock"
+    lock.write_text(PDM_GROUPS_LOCK.replace('["inherit_metadata"]', '["cross_platform"]'), encoding="utf-8")
+    with (pdm_groups / "pyproject.toml").open("a", encoding="utf-8") as f:
+        f.write('\n[tool.wheelgap]\ngroups = ["dev"]\n')
+    # Configured groups leave it unfiltered; a command-line selection is an error.
+    code, names = _poetry_names(capsys, [str(pdm_groups)])
+    assert code == 1 and names == PDM_ALL
+    assert main([str(pdm_groups), "--no-dev"]) == 2
+    assert "inherit_metadata" in capsys.readouterr().err
+
+
+def test_pdm_lock_without_package_groups(tmp_path, capsys, fake_pypi):
+    # Shaped like `pdm lock --strategy no_inherit_metadata` output: no package records its groups.
+    (tmp_path / "pdm.lock").write_text(
+        '[metadata]\ngroups = ["default", "dev"]\nstrategy = []\nlock_version = "4.5.1"\n'
+        'content_hash = "sha256:00"\n\n'
+        '[[package]]\nname = "app-dep"\nversion = "1.0"\n'
+        'files = [{file = "app_dep-1.0-py3-none-any.whl", hash = "sha256:00"}]\n\n'
+        '[[package]]\nname = "devonly"\nversion = "1.0"\n'
+        'files = [{file = "devonly-1.0.tar.gz", hash = "sha256:00"}]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text('[tool.wheelgap]\ngroups = ["dev"]\n', encoding="utf-8")
+    # Configured groups leave it unfiltered; a command-line selection is an error.
+    code, names = _poetry_names(capsys, [str(tmp_path)])
+    assert code == 1 and names == {"app-dep", "devonly"}
+    assert main([str(tmp_path), "--no-dev"]) == 2
+    assert "needs a pdm.lock with package groups" in capsys.readouterr().err
+
+
+_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+_PYPI = "https://pypi.org/simple"
+_FILES = "https://files.pythonhosted.org/packages"
+
+_CPU_EDGE = f'{{ name = "torch", version = "2.5.1", source = {{ registry = "{_CPU_INDEX}" }}'
+
+TWO_INDEX_TORCH_LOCK = f"""\
+version = 1
+
+[[package]]
+name = "app"
+version = "0.1.0"
+source = {{ editable = "." }}
+dependencies = [
+    {{ name = "cpu-extra", marker = "sys_platform == 'linux'" }},
+    {{ name = "torch", version = "2.5.1", source = {{ registry = "{_PYPI}" }}, marker = "sys_platform == 'darwin'" }},
+]
+
+[package.dev-dependencies]
+dev = [{{ name = "devtool" }}]
+
+[[package]]
+name = "cpu-extra"
+version = "1.0"
+source = {{ registry = "{_PYPI}" }}
+wheels = [{{ url = "{_FILES}/cpu_extra-1.0-py3-none-any.whl", hash = "sha256:00" }}]
+dependencies = [
+    {_CPU_EDGE}, marker = "sys_platform == 'linux'" }},
+]
+
+[[package]]
+name = "devtool"
+version = "1.0"
+source = {{ registry = "{_PYPI}" }}
+wheels = [{{ url = "{_FILES}/devtool-1.0-py3-none-any.whl", hash = "sha256:00" }}]
+
+[[package]]
+name = "torch"
+version = "2.5.1"
+source = {{ registry = "{_CPU_INDEX}" }}
+wheels = [{{ url = "{_CPU_INDEX}/torch-2.5.1-cp313-cp313-manylinux_2_17_x86_64.whl", hash = "sha256:00" }}]
+
+[[package]]
+name = "torch"
+version = "2.5.1"
+source = {{ registry = "{_PYPI}" }}
+wheels = [{{ url = "{_FILES}/torch-2.5.1-cp313-none-macosx_11_0_arm64.whl", hash = "sha256:00" }}]
+"""
+
+
+@pytest.mark.parametrize("flags", [[], ["--group", "dev"], ["--no-dev"]])
+def test_uv_two_index_same_version_exits_zero_with_and_without_group(tmp_path, capsys, fake_pypi, flags):
+    (tmp_path / "uv.lock").write_text(TWO_INDEX_TORCH_LOCK, encoding="utf-8")
+    code = main([str(tmp_path), *flags, "-p", "3.13", "-t", "linux-x86_64", "-t", "macos-arm64", "--json"])
+    assert code == 0
+    pkgs = json.loads(capsys.readouterr().out)["packages"]
+    torch_rows = [p for p in pkgs if p["name"] == "torch"]
+    assert [p["results"] for p in torch_rows] == [
+        {"linux-x86_64": "wheel", "macos-arm64": "n/a"},
+        {"linux-x86_64": "n/a", "macos-arm64": "wheel"},
+    ]
+    # When one index lacks a fitting wheel, --explain --json shows the true route only on its target.
+    gap_lock = TWO_INDEX_TORCH_LOCK.replace(
+        "torch-2.5.1-cp313-none-macosx_11_0_arm64.whl",
+        "torch-2.5.1-cp313-cp313-win_amd64.whl",
+    )
+    (tmp_path / "uv.lock").write_text(gap_lock, encoding="utf-8")
+    assert (
+        main([str(tmp_path), *flags, "-p", "3.13", "-t", "linux-x86_64", "-t", "macos-arm64", "--json", "--explain"])
+        == 1
+    )
+    gap_pkgs = json.loads(capsys.readouterr().out)["packages"]
+    gap_torch = [p for p in gap_pkgs if p["name"] == "torch"]
+    assert [(p["results"], p["via"]) for p in gap_torch] == [
+        ({"linux-x86_64": "wheel", "macos-arm64": "n/a"}, {}),
+        ({"linux-x86_64": "n/a", "macos-arm64": "missing"}, {"macos-arm64": ["app", "torch"]}),
+    ]
+    assert fake_pypi == []
+
+
+def test_uv_two_index_same_version_diff_agrees(tmp_path, capsys, fake_pypi):
+    from wheelgap.diff import main as diff_main
+
+    (tmp_path / "old").mkdir()
+    (tmp_path / "new").mkdir()
+    old_lock = tmp_path / "old" / "uv.lock"
+    new_lock = tmp_path / "new" / "uv.lock"
+    old_lock.write_text(
+        f"""\
+version = 1
+
+[[package]]
+name = "app"
+version = "0.1.0"
+source = {{ editable = "." }}
+dependencies = [{{ name = "torch", version = "2.5.0" }}]
+
+[[package]]
+name = "torch"
+version = "2.5.0"
+source = {{ registry = "{_PYPI}" }}
+wheels = [
+    {{ url = "{_FILES}/torch-2.5.0-cp313-cp313-manylinux_2_17_x86_64.whl", hash = "sha256:00" }},
+    {{ url = "{_FILES}/torch-2.5.0-cp313-none-macosx_11_0_arm64.whl", hash = "sha256:00" }},
+]
+""",
+        encoding="utf-8",
+    )
+    new_lock.write_text(TWO_INDEX_TORCH_LOCK, encoding="utf-8")
+    assert diff_main([str(old_lock), str(new_lock), "-p", "3.13", "-t", "linux-x86_64", "-t", "macos-arm64"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["Nothing got worse."]
+
+    # If the PyPI torch entry drops its macOS wheel, diff flags macos-arm64 only.
+    broken = TWO_INDEX_TORCH_LOCK.replace(
+        "torch-2.5.1-cp313-none-macosx_11_0_arm64.whl",
+        "torch-2.5.1-cp313-cp313-win_amd64.whl",
+    )
+    new_lock.write_text(broken, encoding="utf-8")
+    assert diff_main([str(old_lock), str(new_lock), "-p", "3.13", "-t", "linux-x86_64", "-t", "macos-arm64"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "torch 2.5.0 → 2.5.1",
+        "  macos-arm64: ✓ → ✗ missing",
+        "1 package got worse.",
+    ]
+    assert fake_pypi == []
+
+
+# uv 0.10.0 emits plain index keys in [manifest] requirements for uv lock --script.
+# The two registry URLs stand in for the PyTorch CPU index and PyPI, with different wheel targets.
+TWO_INDEX_MANIFEST_TORCH_LOCK = f"""\
+version = 1
+revision = 3
+requires-python = ">=3.11"
+resolution-markers = [
+    "sys_platform == 'linux'",
+    "sys_platform != 'linux'",
+]
+
+[manifest]
+requirements = [
+    {{ name = "torch", marker = "sys_platform != 'linux'", specifier = "==2.5.1", index = "{_PYPI}" }},
+    {{ name = "torch", marker = "sys_platform == 'linux'", specifier = "==2.5.1", index = "{_CPU_INDEX}" }},
+]
+
+[[package]]
+name = "torch"
+version = "2.5.1"
+source = {{ registry = "{_CPU_INDEX}" }}
+resolution-markers = ["sys_platform == 'linux'"]
+wheels = [{{ url = "{_CPU_INDEX}/torch-2.5.1-cp313-cp313-manylinux_2_17_x86_64.whl", hash = "sha256:00" }}]
+
+[[package]]
+name = "torch"
+version = "2.5.1"
+source = {{ registry = "{_PYPI}" }}
+resolution-markers = ["sys_platform != 'linux'"]
+wheels = [{{ url = "{_FILES}/torch-2.5.1-cp313-none-macosx_11_0_arm64.whl", hash = "sha256:00" }}]
+"""
+
+
+def _manifest_torch_lock(group: bool) -> str:
+    if not group:
+        return TWO_INDEX_MANIFEST_TORCH_LOCK
+    return TWO_INDEX_MANIFEST_TORCH_LOCK.replace("requirements = [", "[manifest.dependency-groups]\ndev = [", 1)
+
+
+@pytest.mark.parametrize("group", [False, True], ids=["script-requirements", "virtual-workspace-group"])
+def test_uv_manifest_two_indexes_same_version_selects_only_matching_source(tmp_path, capsys, fake_pypi, group):
+    (tmp_path / "uv.lock").write_text(_manifest_torch_lock(group), encoding="utf-8")
+    flags = ["--only-group", "dev"] if group else []
+    assert main([str(tmp_path), *flags, "-p", "3.13", "-t", "linux-x86_64", "-t", "macos-arm64", "--json"]) == 0
+    packages = json.loads(capsys.readouterr().out)["packages"]
+    assert [(p["name"], p["results"]) for p in packages] == [
+        ("torch", {"linux-x86_64": "wheel", "macos-arm64": "n/a"}),
+        ("torch", {"linux-x86_64": "n/a", "macos-arm64": "wheel"}),
+    ]
+    assert fake_pypi == []
+
+
+@pytest.mark.parametrize("group", [False, True], ids=["script-requirements", "virtual-workspace-group"])
+def test_uv_manifest_two_indexes_diff_does_not_report_false_regressions(tmp_path, capsys, fake_pypi, group):
+    from wheelgap.diff import main as diff_main
+
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    header = (
+        '[manifest.dependency-groups]\ndev = [{ name = "torch" }]'
+        if group
+        else '[manifest]\nrequirements = [{ name = "torch" }]'
+    )
+    (old / "uv.lock").write_text(
+        f"""version = 1
+{header}
+[[package]]
+name = "torch"
+version = "2.5.0"
+source = {{ registry = "{_PYPI}" }}
+wheels = [
+    {{ url = "{_FILES}/torch-2.5.0-cp313-cp313-manylinux_2_17_x86_64.whl", hash = "sha256:00" }},
+    {{ url = "{_FILES}/torch-2.5.0-cp313-none-macosx_11_0_arm64.whl", hash = "sha256:00" }},
+]
+""",
+        encoding="utf-8",
+    )
+    (new / "uv.lock").write_text(_manifest_torch_lock(group), encoding="utf-8")
+    # diff compares full installed graphs; its CLI has no group-selection flags.
+    assert diff_main([str(old), str(new), "-p", "3.13", "-t", "linux-x86_64", "-t", "macos-arm64"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["Nothing got worse."]
+    assert fake_pypi == []
+
+
+@pytest.mark.parametrize(
+    ("manifest_key", "package_key"),
+    [
+        ("index", "registry"),
+        ("path", "path"),
+        ("url", "url"),
+        ("git", "git"),
+        ("editable", "editable"),
+        ("directory", "directory"),
+        ("virtual", "virtual"),
+    ],
+)
+def test_uv_manifest_flat_sources_become_package_source_tables(tmp_path, manifest_key, package_key):
+    (tmp_path / "uv.lock").write_text(
+        f'version = 1\n[manifest]\nrequirements = [{{ name = "example", {manifest_key} = "location" }}]\n'
+        f'[[package]]\nname = "example"\nversion = "1.0"\nsource = {{ {package_key} = "location" }}\n',
+        encoding="utf-8",
+    )
+    (source,) = load_inputs([str(tmp_path)])
+    assert source.root_edges == [("example", None, None, {package_key: "location"})]
+    assert source.uv_manifest["requirements"][0]["source"] == {package_key: "location"}
+
+
+@pytest.mark.parametrize("key", ["index", "path", "url", "git", "editable", "directory", "virtual"])
+def test_uv_manifest_flat_source_wrong_type_is_input_error(tmp_path, key):
+    (tmp_path / "uv.lock").write_text(
+        f'version = 1\n[manifest]\nrequirements = [{{ name = "example", {key} = 42 }}]\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        SourceError, match=rf"the manifest has a dependency 'example' with a \x60{key}\x60 that isn't a string"
+    ):
+        load_inputs([str(tmp_path)])
+
+
+@pytest.mark.parametrize("group", [False, True], ids=["script-requirements", "virtual-workspace-group"])
+def test_uv_manifest_git_urls_match_resolved_commit_sources(tmp_path, group):
+    # uv 0.10.0 writes git = "file:///repo" in the manifest, but
+    # source = { git = "file:///repo#<commit>" } in the locked package.
+    entries = """[
+    { name = "example", marker = "sys_platform == 'linux'", git = "file:///repo/linux" },
+    { name = "example", marker = "sys_platform != 'linux'", git = "file:///repo/other" },
+]"""
+    header = "[manifest.dependency-groups]\ndev = " if group else "[manifest]\nrequirements = "
+    (tmp_path / "uv.lock").write_text(
+        "version = 1\n"
+        + header
+        + entries
+        + """
+[[package]]
+name = "example"
+version = "1.0"
+source = { git = "file:///repo/linux#1111111" }
+
+[[package]]
+name = "example"
+version = "1.0"
+source = { git = "file:///repo/other#2222222" }
+""",
+        encoding="utf-8",
+    )
+    (source,) = load_inputs([str(tmp_path)])
+    if group:
+        select_uv_dependencies([source], UvSelection(only_groups=frozenset({"dev"})))
+    linux, macos = build_targets(["3.13"], ["linux-x86_64", "macos-arm64"])
+    assert list(reachable(source, linux)) == [0]
+    assert list(reachable(source, macos)) == [1]
+
+
+def test_uv_manifest_requirement_with_two_sources_is_input_error(tmp_path):
+    (tmp_path / "uv.lock").write_text(
+        'version = 1\n[manifest]\nrequirements = [{ name = "example", index = "https://x/simple", path = "a" }]\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(SourceError, match="the manifest has a dependency 'example' with conflicting sources"):
+        load_inputs([str(tmp_path)])
+
+
+def _script_lock(*packages: str) -> str:
+    """A lock as `uv lock --script example.py` writes it, from purewheel (a py3 wheel) and puresdist (sdist only)."""
+    files = {
+        "purewheel": '[[package]]\nname = "purewheel"\nversion = "3.1"\nsource = {{ registry = "{pypi}" }}\n'
+        'wheels = [{{ url = "{files}/purewheel-3.1-py3-none-any.whl", hash = "sha256:00" }}]\n',
+        "puresdist": '[[package]]\nname = "puresdist"\nversion = "1.0"\nsource = {{ registry = "{pypi}" }}\n'
+        'sdist = {{ url = "{files}/puresdist-1.0.tar.gz", hash = "sha256:00" }}\n',
+    }
+    requirements = ", ".join(f'{{ name = "{name}" }}' for name in packages)
+    body = "\n".join(files[name].format(pypi=_PYPI, files=_FILES) for name in packages)
+    header = 'version = 1\nrevision = 3\nrequires-python = ">=3.12"\n'
+    return f"{header}\n[manifest]\nrequirements = [{requirements}]\n\n{body}"
+
+
+@pytest.mark.parametrize(
+    ("name", "kind"),
+    [
+        ("example.py.lock", "uv"),
+        ("requirements.py.lock", "uv"),
+        ("requirements.lock", "requirements"),
+        ("requirements-dev.lock", "requirements"),
+        ("requirements-uv.lock", "requirements"),
+        ("requirements-uvicorn.lock", "requirements"),
+    ],
+)
+def test_script_lock_names_are_read_as_uv(tmp_path, name, kind):
+    assert file_kind(tmp_path / name) == kind
+
+
+def test_script_lock_is_checked_offline(tmp_path, capsys, fake_pypi):
+    lock = tmp_path / "example.py.lock"
+    lock.write_text(_script_lock("purewheel", "puresdist"), encoding="utf-8")
+    assert main([str(lock), "-p", "3.13", "-t", "win-arm64", "--json"]) == 1
+    packages = json.loads(capsys.readouterr().out)["packages"]
+    assert sorted((p["name"], p["results"]) for p in packages) == [
+        ("puresdist", {"win-arm64": "source"}),
+        ("purewheel", {"win-arm64": "wheel"}),
+    ]
+    assert fake_pypi == []
+
+
+def test_script_lock_named_requirements_is_not_a_requirements_file(tmp_path):
+    lock = tmp_path / "requirements.py.lock"
+    lock.write_text(_script_lock("purewheel"), encoding="utf-8")
+    (src,) = load_inputs([str(lock)])
+    assert src.kind == "uv"
+    assert [(p.name, p.version) for p in src.packages] == [("purewheel", "3.1")]
+
+
+@pytest.mark.parametrize(("args", "code"), [([], 1), (["--group", "docs"], 2)])
+def test_script_lock_ignores_configured_groups(tmp_path, capsys, fake_pypi, args, code):
+    # [tool.wheelgap] groups belong to the project beside the script; only command-line selectors are refused.
+    (tmp_path / "pyproject.toml").write_text('[tool.wheelgap]\ngroups = ["docs"]\n', encoding="utf-8")
+    lock = tmp_path / "example.py.lock"
+    lock.write_text(_script_lock("purewheel", "puresdist"), encoding="utf-8")
+    assert main([str(lock), "-p", "3.13", "-t", "win-arm64", *args]) == code
+    if code == 2:
+        assert "unknown groups: docs" in capsys.readouterr().err
+
+
+def test_script_lock_diff(tmp_path, capsys, fake_pypi):
+    from wheelgap.diff import main as diff_main
+
+    old = tmp_path / "old.py.lock"
+    new = tmp_path / "new.py.lock"
+    old.write_text(_script_lock("purewheel"), encoding="utf-8")
+    new.write_text(_script_lock("purewheel", "puresdist"), encoding="utf-8")
+    assert diff_main([str(old), str(new), "-p", "3.13", "-t", "win-arm64"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "puresdist 1.0 (new)",
+        "  win-arm64: ● source",
+        "1 new package has gaps.",
+    ]
+    assert fake_pypi == []
+
+
+@pytest.mark.parametrize("name", ["forked.py.lock", "uv.lock"])
+def test_script_lock_forks_apply_where_uv_installs_them(fixtures, tmp_path, capsys, fake_pypi, name):
+    # `uv lock --script forked.py` (uv 0.13.9) forks numpy per Python and packaging per platform. `uv export --script`
+    # installs numpy 2.4.6 on < 3.12 and 2.5.5 on >= 3.12, packaging 26.4 on Linux and 23.2 elsewhere: each entry is
+    # n/a where uv takes the other, instead of a false `source` gap (#703). The same lock renamed to uv.lock is read
+    # the same way: uv picks a manifest requirement's fork by the package's resolution-markers in any lock.
+    lock = tmp_path / name
+    shutil.copyfile(fixtures / "uvscript" / "forked.py.lock", lock)
+    assert main([str(lock), "-p", "3.11,3.15", "-t", "linux-x86_64,macos-arm64", "--json"]) == 0
+    packages = json.loads(capsys.readouterr().out)["packages"]
+    linux_11, mac_11, linux_15, mac_15 = (
+        "3.11 linux-x86_64",
+        "3.11 macos-arm64",
+        "3.15 linux-x86_64",
+        "3.15 macos-arm64",
+    )
+    assert {(p["name"], p["version"]): p["results"] for p in packages} == {
+        ("numpy", "2.4.6"): {linux_11: "wheel", mac_11: "wheel", linux_15: "n/a", mac_15: "n/a"},
+        ("numpy", "2.5.5"): {linux_11: "n/a", mac_11: "n/a", linux_15: "wheel", mac_15: "wheel"},
+        ("packaging", "23.2"): {linux_11: "n/a", mac_11: "wheel", linux_15: "n/a", mac_15: "wheel"},
+        ("packaging", "26.4"): {linux_11: "wheel", mac_11: "n/a", linux_15: "wheel", mac_15: "n/a"},
+    }
+    assert fake_pypi == []
+
+
+def test_virtual_workspace_group_forks_apply_where_uv_installs_them(fixtures, capsys, fake_pypi):
+    # A virtual workspace root (`[tool.uv.workspace] members = []`, `[dependency-groups] dev = ["numpy>=1.26"]`, `uv
+    # lock --python 3.11` with uv 0.13.9) has only the manifest's group edges, which name numpy without a version.
+    # `uv sync --frozen` installs 2.4.6 on 3.11 and 2.5.5 on 3.12 and later, so neither is a gap on the other Python.
+    assert main([str(fixtures / "uvvirtualfork"), "-p", "3.11,3.13", "-t", "linux-x86_64", "--json"]) == 0
+    packages = json.loads(capsys.readouterr().out)["packages"]
+    assert {(p["name"], p["version"]): p["results"] for p in packages} == {
+        ("numpy", "2.4.6"): {"3.11 linux-x86_64": "wheel", "3.13 linux-x86_64": "n/a"},
+        ("numpy", "2.5.5"): {"3.11 linux-x86_64": "n/a", "3.13 linux-x86_64": "wheel"},
+    }
+    assert fake_pypi == []
+
+
+@pytest.mark.parametrize(
+    ("markers", "expected"),
+    [
+        # A marker the target can't decide counts as holding, so the entry is still checked.
+        (("platform_release >= '6'", "platform_release < '6'"), {"3.1", "3.2"}),
+        # No entry's markers hold (uv fails: MissingRootPackage): every entry is checked, as before.
+        (("sys_platform == 'win32'", "sys_platform == 'darwin'"), {"3.1", "3.2"}),
+        # An entry without resolution-markers fits anywhere.
+        (("sys_platform == 'darwin'", None), {"3.2"}),
+    ],
+)
+def test_script_lock_fork_markers_never_hide_an_entry(tmp_path, markers, expected):
+    entries = []
+    for version, marker in zip(("3.1", "3.2"), markers, strict=True):
+        forks = f'resolution-markers = ["{marker}"]\n' if marker else ""
+        entries.append(
+            f'[[package]]\nname = "purewheel"\nversion = "{version}"\nsource = {{ registry = "{_PYPI}" }}\n{forks}'
+            f'wheels = [{{ url = "{_FILES}/purewheel-{version}-py3-none-any.whl", hash = "sha256:00" }}]\n'
+        )
+    lock = tmp_path / "example.py.lock"
+    lock.write_text(
+        'version = 1\nrevision = 3\nrequires-python = ">=3.12"\n\n'
+        '[manifest]\nrequirements = [{ name = "purewheel" }]\n\n' + "\n".join(entries),
+        encoding="utf-8",
+    )
+    sources = load_inputs([str(lock)])
+    results = check(sources, build_targets(["3.13"], ["linux-x86_64"]))
+    assert {r.package.version for r in results if r.needed} == expected
+
+
+@pytest.mark.parametrize("setting", ['no-binary-package = ["purewheel"]', "no-build = true"])
+def test_script_lock_refused_when_its_script_sets_build_restrictions(tmp_path, capsys, fake_pypi, setting):
+    (tmp_path / "example.py").write_text(
+        f'# /// script\n# dependencies = ["purewheel"]\n# [tool.uv]\n# {setting}\n# ///\nprint("hi")\n',
+        encoding="utf-8",
+    )
+    lock = tmp_path / "example.py.lock"
+    lock.write_text(_script_lock("purewheel"), encoding="utf-8")
+    assert main([str(lock), "-p", "3.13", "-t", "win-arm64"]) == 2
+    err = capsys.readouterr().err
+    assert "example.py.lock: the script example.py sets" in err
+    assert setting.split(" ")[0] in err
+    assert fake_pypi == []
+
+
+@pytest.mark.parametrize(
+    ("name", "config"),
+    [("pyproject.toml", '[tool.uv]\nno-binary-package = ["purewheel"]\n'), ("uv.toml", "no-build = true\n")],
+)
+def test_script_lock_refused_when_a_folder_above_sets_build_restrictions(tmp_path, capsys, fake_pypi, name, config):
+    # uv run applies the nearest uv.toml or pyproject.toml, which for a script lock is often in a folder above it.
+    (tmp_path / ".git").mkdir()
+    (tmp_path / name).write_text(config, encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    lock = tmp_path / "scripts" / "example.py.lock"
+    lock.write_text(_script_lock("purewheel"), encoding="utf-8")
+    assert main([str(lock), "-p", "3.13", "-t", "win-arm64"]) == 2
+    err = capsys.readouterr().err
+    assert f"example.py.lock: {tmp_path.resolve() / name} sets" in err
+    assert fake_pypi == []
+
+
+@pytest.mark.parametrize(
+    ("beside", "code"),
+    [
+        # uv skips a pyproject.toml without [tool.uv] and keeps looking, so the restriction above applies.
+        ('[project]\nname = "s"\nversion = "0"\n', 2),
+        # One with [tool.uv] is the nearest config, so the restriction above it doesn't.
+        ('[tool.uv]\nexclude-newer = "2025-01-01T00:00:00Z"\n', 0),
+    ],
+)
+def test_script_lock_folder_above_and_the_pyproject_beside_it(tmp_path, capsys, fake_pypi, beside, code):
+    (tmp_path / "pyproject.toml").write_text("[tool.uv]\nno-build = true\n", encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "pyproject.toml").write_text(beside, encoding="utf-8")
+    lock = tmp_path / "scripts" / "example.py.lock"
+    lock.write_text(_script_lock("purewheel"), encoding="utf-8")
+    assert main([str(lock), "-p", "3.13", "-t", "win-arm64"]) == code
+    if code == 2:
+        assert "no-build" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("setting", ["no-build = false", "no-binary-package = []"])
+def test_script_lock_read_when_its_script_turns_no_restriction_on(tmp_path, capsys, fake_pypi, setting):
+    (tmp_path / "example.py").write_text(
+        f'# /// script\n# dependencies = ["purewheel"]\n# [tool.uv]\n# {setting}\n# ///\n', encoding="utf-8"
+    )
+    lock = tmp_path / "example.py.lock"
+    lock.write_text(_script_lock("purewheel"), encoding="utf-8")
+    assert main([str(lock), "-p", "3.13", "-t", "win-arm64"]) == 0
+
+
+def test_script_lock_read_when_its_script_sets_other_uv_settings(tmp_path, capsys, fake_pypi):
+    (tmp_path / "example.py").write_text(
+        '# /// script\n# dependencies = ["purewheel"]\n# [tool.uv]\n# exclude-newer = "2025-01-01T00:00:00Z"\n# ///\n',
+        encoding="utf-8",
+    )
+    lock = tmp_path / "example.py.lock"
+    lock.write_text(_script_lock("purewheel"), encoding="utf-8")
+    assert main([str(lock), "-p", "3.13", "-t", "win-arm64", "--json"]) == 0
+    packages = json.loads(capsys.readouterr().out)["packages"]
+    assert [(p["name"], p["results"]) for p in packages] == [("purewheel", {"win-arm64": "wheel"})]
+
+
+@pytest.mark.parametrize("flag", ["--no-dev", "--all-extras"])
+def test_script_lock_ignores_the_default_groups_of_a_pyproject_beside_it(tmp_path, capsys, fake_pypi, flag):
+    # uv run takes no dependency groups from the project beside a script, so its default-groups don't apply.
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "app"\nversion = "0"\n\n[dependency-groups]\ndocs = ["purewheel"]\n\n'
+        '[tool.uv]\ndefault-groups = ["docs"]\n',
+        encoding="utf-8",
+    )
+    lock = tmp_path / "example.py.lock"
+    lock.write_text(_script_lock("purewheel"), encoding="utf-8")
+    assert main([str(lock), "-p", "3.13", "-t", "win-arm64", flag, "--json"]) == 0
+    packages = json.loads(capsys.readouterr().out)["packages"]
+    assert [(p["name"], p["results"]) for p in packages] == [("purewheel", {"win-arm64": "wheel"})]
+    assert fake_pypi == []
+
+
+EMPTY_UV_LOCK = 'version = 1\nrevision = 3\nrequires-python = ">=3.11"\n'
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [UvSelection(no_dev=True), UvSelection(all_extras=True), UvSelection(), UvSelection(all_extras=True, no_dev=True)],
+)
+def test_empty_lock_with_a_selection_has_nothing_to_install(tmp_path, selection):
+    # Textualize/textual's uv.lock (a Poetry project, locked by uv with nothing in it): `uv sync --no-dev` or
+    # `--all-extras` installs nothing, so neither does wheelgap, instead of refusing the selection.
+    (tmp_path / "uv.lock").write_text(EMPTY_UV_LOCK, encoding="utf-8")
+    sources = load_inputs([str(tmp_path / "uv.lock")])
+    select_uv_dependencies(sources, selection)
+    assert [p.name for source in sources for p in source.packages] == []
+
+
+@pytest.mark.parametrize(
+    "selection, message",
+    [
+        (UvSelection(extras=frozenset({"syntax"})), "unknown extras: syntax"),
+        (UvSelection(groups=frozenset({"dev"})), "unknown groups: dev"),
+        (UvSelection(only_groups=frozenset({"dev"})), "unknown groups: dev"),
+    ],
+)
+def test_empty_lock_naming_an_extra_or_group_is_an_error(tmp_path, selection, message):
+    # uv sync --extra syntax: "Extra `syntax` is not defined in any project's `optional-dependencies` table".
+    (tmp_path / "uv.lock").write_text(EMPTY_UV_LOCK, encoding="utf-8")
+    with pytest.raises(SourceError, match=message):
+        select_uv_dependencies(load_inputs([str(tmp_path / "uv.lock")]), selection)
+
+
+def test_cli_empty_lock_with_no_dev_has_no_packages_to_check(tmp_path, capsys, fake_pypi):
+    (tmp_path / "uv.lock").write_text(EMPTY_UV_LOCK, encoding="utf-8")
+    assert main([str(tmp_path / "uv.lock"), "--no-dev", "-p", "3.13", "-t", "linux-x86_64"]) == 0
+    assert "No packages to check" in capsys.readouterr().out
+    assert fake_pypi == []
+
+
+# `[dependency-groups] dev = []` and no [project]: uv lock writes the groups to the manifest and no packages.
+GROUPS_ONLY_UV_LOCK = EMPTY_UV_LOCK + "\n[manifest.dependency-groups]\ndev = []\nlint = []\n"
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        UvSelection(groups=frozenset({"dev"})),
+        UvSelection(only_groups=frozenset({"lint"})),
+        UvSelection(no_dev=True, groups=frozenset({"lint"})),
+    ],
+)
+def test_empty_lock_with_manifest_groups_selects_them(tmp_path, selection):
+    # uv sync --group dev / --only-group lint on that lock: "Would make no changes", not an unknown group.
+    (tmp_path / "uv.lock").write_text(GROUPS_ONLY_UV_LOCK, encoding="utf-8")
+    sources = load_inputs([str(tmp_path / "uv.lock")])
+    select_uv_dependencies(sources, selection)
+    assert [p.name for source in sources for p in source.packages] == []
+
+
+def test_empty_lock_with_manifest_groups_still_rejects_other_groups(tmp_path):
+    (tmp_path / "uv.lock").write_text(GROUPS_ONLY_UV_LOCK, encoding="utf-8")
+    with pytest.raises(SourceError, match="unknown groups: docs"):
+        select_uv_dependencies(load_inputs([str(tmp_path / "uv.lock")]), UvSelection(groups=frozenset({"docs"})))
+
+
+def test_empty_lock_with_an_unknown_default_group_is_an_error(tmp_path):
+    # uv sync --no-dev: "Default group `nope` (from `tool.uv.default-groups`) is not defined in the project's
+    # `dependency-groups` table", whatever the flags.
+    (tmp_path / "uv.lock").write_text(EMPTY_UV_LOCK, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text('[tool.uv]\ndefault-groups = ["nope"]\n', encoding="utf-8")
+    with pytest.raises(SourceError, match="unknown default groups: nope"):
+        select_uv_dependencies(load_inputs([str(tmp_path / "uv.lock")]), UvSelection(no_dev=True))

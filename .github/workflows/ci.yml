@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
+        include:
+          - { os: macos-latest, python: "3.14" }
+          - { os: windows-latest, python: "3.14" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+      - name: pytest
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run --python ${{ matrix.python }} --group dev pytest -v -rfE 2>&1 | tee pytest.log
+      # On failure, put the failing tests on the run's summary page, so people (and agents) don't have to dig through the log.
+      - name: Summarise failures
+        if: failure()
+        shell: bash
+        run: |
+          [ -f pytest.log ] || exit 0  # failed before pytest ran: the log says why
+          {
+            echo "### Failed tests (${{ matrix.os }}, Python ${{ matrix.python }})"
+            echo
+            echo '```'
+            if grep -q 'short test summary info' pytest.log; then
+              sed -n '/short test summary info/,$p' pytest.log | tail -n 60
+            else
+              tail -n 60 pytest.log
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+      - run: uv run --group dev ruff check --output-format=github .
+      - run: uv run --group dev ruff format --check --diff .
+      - run: uv run --group dev mypy
+
+  dogfood:
+    name: wheelgap checks its own uv.lock (via the action)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # --group dev: the runtime and dev dependencies, which run on every CI platform. The docs group (MkDocs) is
+      # only installed on Linux to build the site, so its gaps elsewhere (such as watchdog on musl) don't matter.
+      - uses: ./
+        with:
+          args: uv.lock -p 3.11,3.14,3.14t -t all --group dev

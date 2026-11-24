@@ -1,0 +1,513 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://github.com/wheelgap/wheelgap/blob/main/docs/wheelgap-output.schema.json",
+    "title": "wheelgap --json report",
+    "description": "The object printed by `wheelgap --json` from report_json() in src/wheelgap/cli.py. This schema does not cover `--list-targets --json` or the `{\"error\": ...}` object printed on input errors. It describes the output of the wheelgap version it ships with: later versions may add keys, so a saved copy can reject newer output.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["version", "sources", "targets", "packages", "skipped", "ignored", "summary"],
+    "properties": {
+        "version": {"type": "string", "description": "The wheelgap version that produced this report."},
+        "sources": {
+            "type": "array",
+            "description": "Labels of the inputs that were checked (lockfiles, requirements files, or package names): a file's name, or for the one input found in a directory's subfolder its path in that directory, with / separators.",
+            "items": {"type": "string"}
+        },
+        "dockerfile_inputs": {
+            "type": "array",
+            "description": "With --dockerfile-inputs, the Dockerfile RUN line that installs each input file.",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["dockerfile", "line", "file", "constraints", "includes"],
+                "properties": {
+                    "dockerfile": {"type": "string", "description": "The --dockerfile path as given."},
+                    "line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "The line the installing RUN starts on, from 1."
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": "The requirements file, relative to the build context, with / separators."
+                    },
+                    "constraints": {
+                        "type": "array",
+                        "description": "The -c files of the file's RUN line, relative to the build context, with / separators.",
+                        "items": {"type": "string"}
+                    },
+                    "includes": {
+                        "type": "array",
+                        "description": "The files the requirements file includes with -r or -c, at any depth, relative to the build context, with / separators.",
+                        "items": {"type": "string"}
+                    }
+                }
+            }
+        },
+        "dockerfile_notes": {
+            "type": "array",
+            "description": "With --dockerfile, what the answer leaves out: absent when there is nothing to say.",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["dockerfile", "line", "kind", "message"],
+                "properties": {
+                    "dockerfile": {"type": "string", "description": "The --dockerfile path as given."},
+                    "line": {
+                        "type": ["integer", "null"],
+                        "description": "The Dockerfile line the note is about, from 1, or null."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "What was left out or assumed: image-not-read, image-libc, passed-over:CLASS, arg-unset, arg-value, system-python-packages or kept-version."
+                    },
+                    "message": {"type": "string", "description": "The note as printed on stderr."},
+                    "lines": {
+                        "type": "array",
+                        "description": "For passed-over:CLASS and system-python-packages, the RUN lines concerned.",
+                        "items": {"type": "integer", "minimum": 1}
+                    }
+                }
+            }
+        },
+        "dockerfile_packages": {
+            "type": "array",
+            "description": "With --dockerfile-inputs, the RUN lines whose pip install names requirements itself.",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["dockerfile", "line", "installer", "requirements"],
+                "properties": {
+                    "dockerfile": {"type": "string", "description": "The --dockerfile path as given."},
+                    "line": {"type": "integer", "minimum": 1, "description": "The line the RUN starts on, from 1."},
+                    "installer": {"enum": ["pip", "uv pip"]},
+                    "requirements": {
+                        "type": "array",
+                        "description": "The requirements as written on the line, variables replaced.",
+                        "items": {"type": "string"}
+                    }
+                }
+            }
+        },
+        "dockerfile_warnings": {
+            "type": "array",
+            "description": "With --dockerfile-inputs, RUN lines that may install Python packages wheelgap can't see.",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["dockerfile", "line", "kind", "message"],
+                "properties": {
+                    "dockerfile": {"type": "string", "description": "The --dockerfile path as given."},
+                    "line": {"type": "integer", "minimum": 1, "description": "The line the RUN starts on, from 1."},
+                    "kind": {"type": "string", "description": "may-install or may-bring."},
+                    "message": {"type": "string", "description": "The warning as printed on stderr."}
+                }
+            }
+        },
+        "directory_inputs": {
+            "type": "array",
+            "description": "For each input that was a directory, the file wheelgap read from it and why. Absent when no input was a directory.",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["directory", "file", "reason", "empty", "other_requirements"],
+                "properties": {
+                    "directory": {"type": "string", "description": "The directory as given."},
+                    "file": {
+                        "type": "string",
+                        "description": "The file that was read, relative to the directory, with / separators."
+                    },
+                    "reason": {
+                        "enum": ["lockfile", "pyproject", "requirements", "subfolder"],
+                        "description": "lockfile: a lockfile or requirements.txt at the root, by name. pyproject: the root's pyproject.toml. requirements: the root's only requirements file under another name. subfolder: the only input below the root."
+                    },
+                    "empty": {
+                        "type": "array",
+                        "description": "Files that come before this one in the search and were passed over because they had nothing to check.",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["file", "why"],
+                            "properties": {
+                                "file": {"type": "string", "description": "Relative to the directory."},
+                                "why": {"type": "string", "description": "What the file holds instead."}
+                            }
+                        }
+                    },
+                    "other_requirements": {
+                        "type": "array",
+                        "description": "With reason pyproject: the root's requirements files under other names, which weren't read, those that look compiled and pinned first. Empty for the other reasons.",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["file", "compiled"],
+                            "properties": {
+                                "file": {"type": "string", "description": "Relative to the directory, with / separators."},
+                                "compiled": {
+                                    "type": "boolean",
+                                    "description": "Whether it looks like a compiler's full pin list (pip-compile, uv pip compile, uv export). A hint only: such a file may as well pin the build tools or the docs, so it is never read in pyproject.toml's place."
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "targets": {
+            "type": "array",
+            "description": "The platforms and Pythons that were checked. Each package's results, rejected and via keys are these labels.",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["label", "python", "platform"],
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "Key used in results/rejected/via: the platform alone when one Python is checked, or 'PYTHON PLATFORM' when several are."
+                    },
+                    "python": {
+                        "type": "string",
+                        "description": "Python version, with a trailing t for free-threaded builds."
+                    },
+                    "platform": {
+                        "type": "string",
+                        "description": "Platform name such as linux-x86_64 or musl-aarch64."
+                    }
+                }
+            }
+        },
+        "packages": {
+            "type": "array",
+            "description": "One entry per package that is installed on at least one target. A range that resolves to different releases for different Pythons has one entry per release, with n/a for the targets using the other.",
+            "items": {"$ref": "#/$defs/package"}
+        },
+        "skipped": {
+            "type": "array",
+            "description": "Packages that were not looked up (git, path, file, editable, private index, …).",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "reason"],
+                "properties": {"name": {"type": "string"}, "reason": {"type": "string"}}
+            }
+        },
+        "ignored": {
+            "type": "array",
+            "description": "Package names excluded by --ignore or ignore = [...] in [tool.wheelgap].",
+            "items": {"type": "string"}
+        },
+        "ignored_targets": {
+            "type": "array",
+            "description": "Present from 0.9.0 on (older versions don't write it): packages ignored on some targets only, by --ignore NAME:TARGET or the same form in ignore = [...]. They stay in packages with their real results, but a gap on these platforms doesn't count towards with_gaps or the exit code. Lists only checked platforms, and no package that is also in ignored.",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "platforms"],
+                "properties": {
+                    "name": {"type": "string", "description": "Package name as written in the input."},
+                    "platforms": {
+                        "type": "array",
+                        "description": "Platform names (as in targets[].platform), for every Python checked on them.",
+                        "items": {"type": "string"}
+                    }
+                }
+            }
+        },
+        "advisory": {
+            "type": "array",
+            "description": "Present from 0.10.0 on (older versions don't write it): labels of the checked targets that --advisory or advisory = [...] in [tool.wheelgap] made advisory, empty when there are none. Gaps on these targets are reported in packages and counted in with_gaps and per_target as usual, but don't change the exit code.",
+            "items": {"type": "string"}
+        },
+        "dropped": {
+            "type": "object",
+            "description": "Present from 0.12.0 on, with --dist when the comparison with the previous release ran: each target label the previous release on PyPI had an installable wheel for that these files have none for, mapped to that release's version. {} when nothing was dropped or there is no previous release; absent without --dist or when the comparison couldn't run.",
+            "additionalProperties": {"type": "string"}
+        },
+        "blocking_newer_python": {
+            "type": "array",
+            "description": "Present only when exactly two Python versions are checked and one is newer (3.14 and 3.15, or 3.14 and 3.15t; not 3.14 and 3.14t), and not written before 0.10.0: the packages that block the move to the newer one, in the order of packages. A package is listed when the newer Python's result is source or missing on a platform where the older one's is wheel, n/a or bundled, not counting the platforms in ignored_targets. It's decided per package name, over every version of it in the inputs. Packages that couldn't be checked (unknown on the newer Python) are left out, so an empty list isn't a pass on its own: summary and the exit code still decide.",
+            "items": {"type": "string", "description": "Package name as written in the input."}
+        },
+        "gap_wheels": {
+            "type": "array",
+            "description": "Present only with --fix (not written before it existed): one entry per gap cell (source or missing, on a target that isn't ignored) that a wheel on wheelgap's gap wheel index (https://wheelgap.github.io/wheels/) fills, in the order of packages and targets. Only for packages positively from PyPI, of exactly the checked version, with a wheel whose tags the target accepts. Empty when nothing fits, when the run uses --index-url or WHEELGAP_INDEX_URL, or when the gap wheel list couldn't be read (a note on stderr says so). It doesn't change results, summary or the exit code.",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "version", "target", "wheel", "url", "sha256"],
+                "properties": {
+                    "name": {"type": "string", "description": "Package name as written in the input."},
+                    "version": {"type": "string", "description": "The checked version."},
+                    "target": {"type": "string", "description": "The target label, as in targets."},
+                    "wheel": {"type": "string", "description": "The gap wheel's filename."},
+                    "url": {"type": "string", "description": "Where to download the wheel."},
+                    "sha256": {"type": "string", "description": "The wheel's SHA-256, as 64 lowercase hex digits."}
+                }
+            }
+        },
+        "fix_summary": {
+            "type": "object",
+            "description": "Present only with --fix: how many gap cells (a package on a target, source or missing, not ignored) each kind of packages[].fix covers. gaps is the sum of the other five; only upgrade counts as fixed by an official release (gap wheels are unofficial). It doesn't change summary or the exit code.",
+            "additionalProperties": false,
+            "required": ["gaps", "upgrade", "gap_wheel", "none", "not_looked_up", "uv_may_fork"],
+            "properties": {
+                "gaps": {"type": "integer", "minimum": 0, "description": "Gap cells: the sum of the other five."},
+                "upgrade": {"type": "integer", "minimum": 0, "description": "Gap cells a newer official release fixes."},
+                "gap_wheel": {"type": "integer", "minimum": 0, "description": "Gap cells no newer release fixes (or whose releases weren't looked up) but an unofficial gap wheel fills."},
+                "none": {"type": "integer", "minimum": 0, "description": "Gap cells with no fix known: kind none with reason no_newer_release, loses_wheel or no_binary."},
+                "not_looked_up": {"type": "integer", "minimum": 0, "description": "Gap cells of kind none with reason not_looked_up: not checked for an upgrade, so not known to have no fix."},
+                "uv_may_fork": {"type": "integer", "minimum": 0, "description": "Gap cells of kind none with reason uv_may_fork."}
+            }
+        },
+        "summary": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["packages", "with_gaps"],
+            "properties": {
+                "packages": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Requirements checked, each input entry once: a range that resolves to a different release per Python counts once though it has more than one entry in packages, while two entries for the same name (such as forked versions in a uv.lock) count twice. Equal to the length of packages unless a range was split."
+                },
+                "with_gaps": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "How many of the requirements counted in packages have source, missing or unknown in the results of any of their entries, not counting the platforms in ignored_targets. Gaps on advisory targets count."
+                },
+                "per_target": {
+                    "type": "object",
+                    "description": "Gap counts for every checked target, keyed by target label, with zeros for a target without gaps (including when only one target is checked). A package's cell on a platform ignored_targets lists for it isn't counted. Present from 0.9.0 on; older versions leave it out.",
+                    "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["source", "missing", "unknown"],
+                        "properties": {
+                            "source": {"type": "integer", "minimum": 0, "description": "Packages that build from source on this target."},
+                            "missing": {"type": "integer", "minimum": 0, "description": "Packages that can't install on this target."},
+                            "unknown": {"type": "integer", "minimum": 0, "description": "Packages wheelgap couldn't check for this target."}
+                        }
+                    }
+                },
+                "complete": {
+                    "type": "boolean",
+                    "description": "With --dockerfile-inputs, false when dockerfile_warnings lists a line wheelgap couldn't see into, which may install Python packages the answer doesn't have, or when -p and -t stood in for an image wheelgap couldn't read. Absent without the flag."
+                }
+            }
+        }
+    },
+    "$defs": {
+        "status": {
+            "type": "string",
+            "description": "Per-target result from wheelgap.check.Status.",
+            "enum": ["wheel", "source", "missing", "unknown", "n/a", "bundled"]
+        },
+        "package": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version", "error", "results"],
+            "properties": {
+                "name": {"type": "string", "description": "Package name as written in the input."},
+                "version": {"type": ["string", "null"], "description": "Pinned or resolved version, if known."},
+                "error": {"type": ["string", "null"], "description": "Why the package is unknown, otherwise null."},
+                "results": {
+                    "type": "object",
+                    "description": "Status for each target, keyed by that target's label.",
+                    "additionalProperties": {"$ref": "#/$defs/status"}
+                },
+                "rejected": {
+                    "type": "object",
+                    "description": "Present with --explain: rejected wheels and reasons, keyed by target label, only for targets whose result is source or missing and that ignored_targets doesn't list for this package.",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["file", "reason"],
+                            "properties": {"file": {"type": "string"}, "reason": {"type": "string"}}
+                        }
+                    }
+                },
+                "via": {
+                    "type": "object",
+                    "description": "Present with --explain: dependency path that installs the package, keyed by target label, for the same targets as rejected and (from 0.14.0 on) targets where the package couldn't be looked up (uv.lock, and poetry.lock before lock-version 2.1). Empty object when the input has no graph.",
+                    "additionalProperties": {"type": "array", "items": {"type": "string"}}
+                },
+                "direct": {
+                    "type": "object",
+                    "description": "Present from 0.13.0 on (older versions don't write it), with --explain: the direct dependencies that lead to the package, keyed by target label, for gap targets and (from 0.14.0 on) targets where the package couldn't be looked up, as the text table's `(via ...)` names them (uv.lock, Poetry before lock-version 2.1, and --deps). A target is left out when the package is itself a direct dependency or the input has no graph, and may be left out when the lockfile doesn't record which direct dependency asked for an extra that leads to the package (Poetry before lock-version 2.1); empty object when no target has one.",
+                    "additionalProperties": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+                },
+                "issues_url": {
+                    "type": ["string", "null"],
+                    "description": "Present from 0.12.0 on (older versions don't write it), with --explain: the package's issue tracker URL from its PyPI metadata (or GitHub /issues fallback), or null if none was found or the package's index isn't known to be PyPI."
+                },
+                "build_requires": {
+                    "type": ["array", "null"],
+                    "items": {"type": "string"},
+                    "description": "Present from 0.10.0 on (older versions don't write it), with --explain --build-info: the [build-system] requires of the release's sdist, normalized (name, extras, version range) and limited to those whose marker holds on a target in rejected that is source; null when there is no source build or no answer (the sdist isn't positively from PyPI, couldn't be read, or pip could read another pyproject.toml from it)."
+                },
+                "notes": {
+                    "type": "array",
+                    "description": "Present from 0.10.0 on (older versions don't write it), with --explain: the coverage tracker's notes (https://github.com/wheelgap/tracker/blob/main/notes/README.md) that apply to this package's gaps, each with the gap targets it covers. Only looked up with --notes (or notes = true), for packages that are positively from PyPI, and never with --offline, --index-url or a WHEELGAP_INDEX_URL mirror. Empty without --notes, when there are none, or when the lookup failed. Treat text as untrusted plain text.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["platforms", "kind", "text", "links", "versions", "updated", "targets"],
+                        "properties": {
+                            "platforms": {"type": "array", "items": {"type": "string"}, "description": "Platforms the note is about, or [\"all\"]: the nine platforms the tracker scans."},
+                            "kind": {"type": "string", "description": "workaround, alternative, upstream-issue or other-source."},
+                            "text": {"type": "string", "description": "One line of plain text; backticks mark commands and names."},
+                            "links": {"type": "array", "items": {"type": "string"}, "description": "https:// URLs that back the note."},
+                            "versions": {"type": ["string", "null"], "description": "The releases the note is about (a version specifier), or null for all."},
+                            "updated": {"type": "string", "description": "When the note was last checked (YYYY-MM-DD)."},
+                            "targets": {"type": "array", "items": {"type": "string"}, "description": "The labels of this package's gap targets the note covers."}
+                        }
+                    }
+                },
+                "build_lab": {
+                    "type": "object",
+                    "description": "Present from 0.11.0 on (older versions don't write it), with --explain: the coverage tracker's build lab results for this package's source cells, keyed by target label (like rejected's keys). The lab builds popular packages with no wheel for a target from their PyPI sdist on GitHub's runners, then installs and imports the result: these are its dated observations on GitHub's runners, which have compilers and many system libraries preinstalled, so a build that works there can still need setup on your machine, and nothing the lab built is downloaded. A result is kept only for exactly the checked version and exactly that target (the tracker's label, such as 3.14t win-arm64), and only in the tracker's published format; anything else is dropped. Looked up with --notes, under the same rules as notes. Empty without --notes, when there are none, or when the lookup failed. It doesn't change results, summary or the exit code.",
+                    "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["target", "version", "outcome", "seconds", "wheel", "extensions", "import", "gil", "reason", "excerpt", "toolchains", "runner", "python", "date", "verdict"],
+                        "properties": {
+                            "target": {"type": "string", "description": "The tracker's label for the target the lab built for, such as 3.14t win-arm64."},
+                            "version": {"type": "string", "description": "The release the lab built: always the checked version."},
+                            "outcome": {"enum": ["built", "failed", "timeout"], "description": "Whether the build made a wheel, failed, or ran out of time."},
+                            "seconds": {"type": "integer", "minimum": 0, "description": "How long the build took."},
+                            "wheel": {"type": ["string", "null"], "description": "The built wheel's tag (such as cp314-cp314t-win_arm64, or py3-none-any for a pure Python build); null unless built."},
+                            "extensions": {"type": ["integer", "null"], "description": "How many compiled extension modules the wheel has (0 or more); null unless built. 0 means no compiled part: never a working compiled build."},
+                            "import": {"enum": ["ok", "failed", "deps-failed", null], "description": "Whether the installed wheel imported, or its dependencies didn't install; null unless built."},
+                            "gil": {"enum": ["kept-off", "re-enabled", null], "description": "On a free-threaded Python, whether importing it turned the GIL back on; null unless a free-threaded build with an extension module imported."},
+                            "reason": {"type": ["string", "null"], "description": "Why the build failed (needs OpenSSL, needs a Rust toolchain, needs a C/C++ compiler, needs CMake, needs a system library, build dependency failed, unsupported platform, compile error or other); null unless failed."},
+                            "excerpt": {"type": "string", "description": "The last error lines of the build or import log, printable ASCII, at most 400 characters; may be empty. Treat it as untrusted plain text."},
+                            "toolchains": {"type": "array", "items": {"type": "string"}, "description": "Which of rustc, cargo, gcc, cl and cmake the runner had."},
+                            "runner": {"type": "string", "description": "The GitHub runner it built on, such as windows-11-arm."},
+                            "python": {"type": "string", "description": "The Python it built with, such as 3.14.2t."},
+                            "date": {"type": "string", "description": "When the lab built it (YYYY-MM-DD)."},
+                            "verdict": {"type": "string", "description": "What the result means, as --explain prints it, such as builds from source in 87 s and imports."}
+                        }
+                    }
+                },
+                "conda_forge": {
+                    "description": "Present with --explain --conda-forge, from 0.10.0 on, when conda-forge has a package with exactly this package's canonical name and a build of this version that fits at least one of the targets in rejected: on the main label and not marked broken, for the target's conda subdir or noarch, and for its Python version and ABI (free-threaded or not). A hint only: it doesn't change results, summary or the exit code, and the conda package may be another project. Left out when nothing fits, the package's index isn't known to be PyPI (its name isn't sent), or the lookup failed (a note on stderr says so).",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name", "version", "builds"],
+                    "properties": {
+                        "name": {"type": "string", "description": "The conda-forge package name that was looked up (the canonical PyPI name)."},
+                        "version": {"type": "string", "description": "The checked version, which every build counted is of."},
+                        "builds": {
+                            "type": "object",
+                            "description": "For each target label with a build that fits: the conda subdirs of those builds, its own (such as linux-aarch64 or osx-arm64) and/or noarch.",
+                            "additionalProperties": {"type": "array", "items": {"type": "string"}}
+                        }
+                    }
+                },
+                "piwheels": {
+                    "description": "Present with --explain --piwheels, when piwheels has a wheel of this version that fits at least one of the targets in rejected (only linux-armv7l is looked up: piwheels has no aarch64 wheels). A hint only: it doesn't change results, summary or the exit code. Left out when nothing fits, the package's index isn't known to be PyPI (its name isn't sent), or the lookup failed (a note on stderr says so).",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name", "version", "wheels", "apt"],
+                    "properties": {
+                        "name": {"type": "string", "description": "The canonical package name that was looked up on piwheels.org."},
+                        "version": {"type": "string", "description": "The checked version, which every wheel counted is of."},
+                        "wheels": {
+                            "type": "object",
+                            "description": "For each target label with a wheel that fits: the matching wheel filenames from piwheels.",
+                            "additionalProperties": {"type": "array", "items": {"type": "string"}}
+                        },
+                        "apt": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "The Raspberry Pi OS (apt) packages piwheels lists as needed by those wheels, sorted, each once; empty when it lists none."
+                        }
+                    }
+                },
+                "suggest": {
+                    "description": "Present with --explain --suggest, from 0.10.0 on, for a pinned package with a gap whose releases were looked up on PyPI: for each target in rejected, a newer release with a wheel for it (not yanked, Requires-Python admitting the target's Python, and no pre-release unless the checked version is one) that also keeps a wheel on every target where this package is wheel now. The targets get the lowest such release with a wheel for all of them when there is one, otherwise each its own nearest; a target with no such release is left out, so the object can be empty. The release can be outside the input's own version specifier (foo<2 resolving to 1.9 may get 2.1). Absent when the package has no gap, has no version, is covered by a requirements file's --no-binary, wasn't looked up (its index isn't known to be PyPI, or the run uses --index-url or WHEELGAP_INDEX_URL), or its lookup failed or was dropped (a note on stderr says so). It doesn't change results, summary or the exit code.",
+                    "type": "object",
+                    "additionalProperties": {"type": "string"}
+                },
+                "fix": {
+                    "description": "Present with --fix, with or without --explain: for each gap target of this package (source or missing, not ignored), its way out, in order of preference. kind upgrade: a newer release has a wheel for that target (the release --suggest would name: not yanked, Requires-Python admitting the target's Python, no pre-release unless the checked version is one, and keeping a wheel on every target this package has one on now); kind gap_wheel: no such release, but an unofficial wheel of the checked version on wheelgap's gap wheel index fills it (as in the top-level gap_wheels); kind none: neither, with the reason. Releases are looked up on pypi.org only for packages positively from PyPI, never with --index-url or WHEELGAP_INDEX_URL (reason not_looked_up then). Empty for a package with no gap. It doesn't change results, summary or the exit code.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["kind"],
+                        "properties": {
+                            "kind": {"enum": ["upgrade", "gap_wheel", "none"], "description": "The way out: upgrade, gap_wheel or none."},
+                            "version": {"type": "string", "description": "kind upgrade: the release to move to. wheelgap doesn't resolve dependencies: the rest of them must allow it."},
+                            "how": {"type": "string", "description": "kind upgrade: what to run or change for this input, such as uv lock --upgrade-package NAME for a uv.lock, or the pin to write in a requirements file."},
+                            "constraint": {
+                                "type": ["object", "null"],
+                                "description": "kind upgrade: the user's own requirement for this package, where wheelgap reads one (a uv.lock's project dependencies, dependency groups and [manifest] constraints, or a ranged requirement in a requirements file, pyproject.toml, script or the command line), and whether the release fits it; null otherwise (a transitive dependency, a Poetry or PDM lock, an exact pin, a uv override).",
+                                "additionalProperties": false,
+                                "required": ["file", "requirements", "allows", "via"],
+                                "properties": {
+                                    "file": {"type": "string", "description": "Where the requirement is written, such as pyproject.toml or requirements.txt."},
+                                    "requirements": {"type": "array", "items": {"type": "string"}, "description": "NAME and specifier, such as pyyaml>=6,<7: all of them when allows is true, only the ones that exclude the release when it's false."},
+                                    "allows": {"type": "boolean", "description": "Whether the release is within every one of them; false: the requirement needs relaxing first."},
+                                    "via": {"enum": ["requirement", "constraint"], "description": "requirement: the package's own requirement in file; constraint: file's -c constraints, which pip applies too."}
+                                }
+                            },
+                            "gap_wheel": {
+                                "type": ["object", "null"],
+                                "description": "kind upgrade: the unofficial gap wheel of the checked version that also fills this target, the fallback for when the package can't be upgraded; null when none does.",
+                                "additionalProperties": false,
+                                "required": ["wheel", "url", "sha256", "unofficial"],
+                                "properties": {
+                                    "wheel": {"type": "string", "description": "The gap wheel's filename."},
+                                    "url": {"type": "string", "description": "Where to download the wheel."},
+                                    "sha256": {"type": "string", "description": "The wheel's SHA-256, as 64 lowercase hex digits."},
+                                    "unofficial": {"enum": [true], "description": "Always true: built by wheelgap from PyPI's sdist (https://wheelgap.github.io/wheels/), not by the package's maintainers."}
+                                }
+                            },
+                            "wheel": {"type": "string", "description": "kind gap_wheel: the gap wheel's filename."},
+                            "url": {"type": "string", "description": "kind gap_wheel: where to download the wheel."},
+                            "sha256": {"type": "string", "description": "kind gap_wheel: the wheel's SHA-256, as 64 lowercase hex digits."},
+                            "unofficial": {"enum": [true], "description": "kind gap_wheel: always true: built by wheelgap from PyPI's sdist (https://wheelgap.github.io/wheels/), not by the package's maintainers."},
+                            "abi3_only": {"type": "boolean", "description": "kind none: true when the target is free-threaded and the checked release has abi3 wheels for its platform, which free-threaded Python can't use (as --explain's reason says); the package needs a cpXYt (or abi3t) wheel."},
+                            "reason": {"enum": ["no_newer_release", "loses_wheel", "uv_may_fork", "not_looked_up", "no_binary"], "description": "kind none: no_newer_release (no newer release has a wheel for this target), loses_wheel (every newer release with one drops a wheel this package has elsewhere), uv_may_fork (a uv.lock where what they drop is only another Python's wheel: uv may lock a release per Python, so try uv lock --upgrade-package NAME and check again), not_looked_up (the releases weren't looked up: the package isn't known to be from PyPI, the run uses another index, or the lookup failed; a line in the text output says which), no_binary (a requirements file's --no-binary: pip uses no wheel for it)."}
+                        }
+                    }
+                },
+                "gap_wheel": {
+                    "description": "Present with --explain --fix: for each target in rejected that a wheel on wheelgap's gap wheel index fills (as for the top-level gap_wheels), that wheel. These wheels are unofficial: built by wheelgap from the PyPI sdist, not from the package's maintainers. Empty when none fills one, when the run uses --index-url or WHEELGAP_INDEX_URL, or when the gap wheel list couldn't be read. It doesn't change results, summary or the exit code.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["wheel", "url", "sha256"],
+                        "properties": {
+                            "wheel": {"type": "string", "description": "The gap wheel's filename."},
+                            "url": {"type": "string", "description": "Where to download the wheel."},
+                            "sha256": {"type": "string", "description": "The wheel's SHA-256, as 64 lowercase hex digits."},
+                            "install": {"type": "string", "description": "The pip install command, only for inputs pip installs from as they are (a requirements file, a pyproject.toml, a pip report or package names); a lockfile's entries have none (see the text output's --fix section)."}
+                        }
+                    }
+                },
+                "last_with_wheel": {
+                    "description": "Present with suggest, from 0.11.0 on: for each target in rejected that no newer release has a wheel for (counted as for suggest), the newest older release that has one, read from the 50 newest releases older than the checked version (no pre-release unless the checked version is one). A target with no such release is left out, so the object can be empty. It doesn't change results, summary or the exit code.",
+                    "type": "object",
+                    "additionalProperties": {"type": "string"}
+                },
+                "bundled": {
+                    "description": "Present with --pyodide-lock when this package is bundled on a Pyodide target: the version Pyodide ships.",
+                    "type": "string"
+                },
+                "bundled_version_differs": {
+                    "description": "Present with bundled: true when Pyodide's version isn't the one pinned, or is outside the required range (it still counts as bundled). Always false for an unpinned requirement.",
+                    "type": "boolean"
+                },
+                "pip_refuses": {
+                    "description": "Present for a uv.lock or a script's lock checked with --online, when the package has files that uv installs and pip would refuse: each such file mapped to why, such as \"requires Python <3.15,>=3.10\". uv checks the Requires-Python lower bound, so these files count in results, which follow uv sync; pip (on an exported requirements file, say) refuses them on these targets' Python. With several Pythons the package has one entry per differing answer, and the key is on the entry for the Python pip refuses. Never empty: left out when pip refuses nothing.",
+                    "type": "object",
+                    "additionalProperties": {"type": "string", "description": "Keyed by filename, not by target label: why pip refuses that file."}
+                }
+            }
+        }
+    }
+}
