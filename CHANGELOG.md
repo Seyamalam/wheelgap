@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- The `check-wheels` skill, the Cursor rule and `llms.txt` say more about `--fix`'s gap wheel fallback: for poetry.lock, pdm.lock and other lockfiles, add the index where the lock is made and lock again (never invent `[tool.uv]` or `--extra-index-url` lines for them); for a uv.lock, `[tool.uv.sources]` applies only to direct dependencies, so follow the output's note; after adding the index, a re-run on a requirements file, `pyproject.toml`, package names or a script still reports the gap, so don't loop on it; an empty `gap_wheels` isn't proof there's none; and never suggest the index in a project that installs from a private index. (#582, thanks [@Seyamalam](https://github.com/Seyamalam))
+- The `check-wheels` skill, the Cursor rule and `llms.txt` say more about `--fix`'s gap wheel fallback: for lockfiles other than uv.lock, add the index where the lock is made and lock again (a pdm.lock, or a poetry.lock package that records no index, gets none), never inventing `[tool.uv]` or `--extra-index-url` lines for them; for a uv.lock, `[tool.uv.sources]` applies only to direct dependencies, so follow the output's note; after adding the index, a re-run on a requirements file, `pyproject.toml`, an `environment.yml`'s `pip:` list, package names or a script still reports the gap, so don't loop on it; an empty `gap_wheels` isn't proof there's none; and never suggest the index in a project that installs from a private index. (#582, thanks [@Seyamalam](https://github.com/Seyamalam))
 
 ## 0.14.0 (2026-11-24)
 
