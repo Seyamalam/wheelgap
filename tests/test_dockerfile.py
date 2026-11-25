@@ -2966,7 +2966,9 @@ def test_dockerfile_inputs_uv_sync_refuses_an_ancestor_python_version(tmp_path):
         "FROM python:3.13\nWORKDIR /app\nCOPY app/ /app/\nCOPY .python-version /\nRUN uv sync --locked\n",
         files=(),
     )
-    with pytest.raises(DockerfileError, match=r"line 4: a \.python-version in a folder above the project's may make"):
+    with pytest.raises(
+        DockerfileError, match=r":4: a \.python-version in a folder above the project.s may make `uv sync` on line 5"
+    ):
         dockerfile_requirements(path, uv_syncs={})
 
 
