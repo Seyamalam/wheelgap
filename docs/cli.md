@@ -290,14 +290,15 @@ file that pip installs on one line and uv on another, and every other `uv` comma
 `RUN uv sync --locked` or `--frozen` is read too (**after 0.14.0**). The `uv.lock` and `pyproject.toml` in the
 folder the line runs in are followed back to the build context as a `-r` file is, must come from beside each other
 there, and the answer checks the lock as `wheelgap uv.lock` does, with `uv sync`'s own selection: the project's
-dependencies and its default groups, `--no-dev` leaving the dev group out as uv does (the project itself, which uv
-builds from the copied source, is listed as skipped, as an editable is for `wheelgap uv.lock`). The line is the
+dependencies and its default groups, `--no-dev` leaving the dev group out as uv does (the project itself is listed as
+skipped, as an editable is for `wheelgap uv.lock`; when it has a `[build-system]`, uv builds it in the image, and
+the build requirements it fetches for that, which the lock doesn't pin, aren't checked). The line is the
 selection: `--extra`, `--all-extras`, `--group`, `--only-group` and `--no-dev` on wheelgap's command line are an
 error, and `[tool.wheelgap]` `extras` and `groups` don't change it. Exactly one of
 `--locked` and `--frozen` is required — without one uv may relock, and the copied lock may then not be what the
 image gets — `--no-dev` and the harmless global flags (`-q`/`--quiet`, `--no-cache`/`--no-cache-dir`, `--no-progress`,
-`--no-python-downloads`) may join it, and every other flag is an error naming the line, since it may change the
-installed set. Errors too, each naming its line: a second `uv sync` in the final stage, a `uv.lock` or
+`--no-python-downloads`) may join it after `sync` (`uv --quiet sync --locked` is an error), and every other flag is
+an error naming the line, since it may change the installed set. Errors too, each naming its line: a second `uv sync` in the final stage, a `uv.lock` or
 `pyproject.toml` no `COPY` brings (or any `COPY --from` before the line other than uv's own `/uv /uvx`, whose files
 wheelgap can't read), the two from different folders of the build context (the image's pair may not be one
 project), a cache or tmpfs mount over them, a `uv.toml` or `[tool.uv]` table uv would read settings from, a
@@ -305,7 +306,8 @@ project), a cache or tmpfs mount over them, a `uv.toml` or `[tool.uv]` table uv 
 (`~/.config/uv`, where `uv python pin --global` writes), a `.venv` in the project's folder (each copied or written by
 an earlier `RUN`), and `UV_PROJECT_ENVIRONMENT` (in an `ENV`, an `ARG` with a value, or on the `RUN`), which may each give the sync
 a Python or environment the check doesn't know, and a `pyproject.toml` `requires-python` the checked Python doesn't
-satisfy. With none of these, uv 0.13.9 creates `.venv` from the image's own Python (it downloads one only when no
+satisfy, and a `uv.toml` with settings beside the lock in the build context that the image doesn't get (not
+copied, or left out by `.dockerignore`), since the lock check would apply it. With none of these, uv 0.13.9 creates `.venv` from the image's own Python (it downloads one only when no
 Python it finds satisfies `requires-python`), so the image's Python and platform are the target.
 
 A `.dockerignore` is read as BuildKit reads it:

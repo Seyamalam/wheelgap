@@ -3949,6 +3949,16 @@ def _dockerfile_requirements(
                 "--dockerfile-inputs reads the pyproject.toml beside the lock in the build context: "
                 f"{uv_lock.relative_to(context)} and {pyproject.relative_to(context)} aren't beside each other"
             )
+        # The lock check (sources._uv_build_restrictions) applies a uv.toml beside the lock on disk. One a COPY
+        # brings was refused above; one left out of the image (not copied, or left out by .dockerignore) isn't
+        # read by `uv sync` there, so checking with it would answer for settings the image doesn't have.
+        beside = uv_lock.with_name("uv.toml")
+        if beside.is_file() and _uv_config_reason(beside, "uv.toml", "uv.toml", "uv sync"):
+            raise DockerfileError(
+                f"line {number}: {beside.relative_to(context).as_posix()} sits beside the lock in the build context "
+                "but no COPY brings it beside the lock in the image, so `uv sync` there doesn't read it, and "
+                "wheelgap's lock check would apply its settings"
+            )
         try:
             project_table = tomllib.loads(pyproject.read_bytes().decode("utf-8-sig")).get("project")
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:

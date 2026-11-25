@@ -2508,7 +2508,9 @@ def _sync_context(tmp_path, dockerfile, pyproject='[project]\nname = "app"\nrequ
     paths (the lock's contents are for load_inputs), so they hold placeholder text."""
     (tmp_path / "uv.lock").write_text("purewheel==3.1\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text(pyproject, encoding="utf-8")
-    (tmp_path / "uv.toml").write_text("no-build = true\n", encoding="utf-8")
+    # Not beside the lock: a uv.toml there is refused even when no COPY brings it (the lock check would read it).
+    (tmp_path / "cfg").mkdir(exist_ok=True)
+    (tmp_path / "cfg/uv.toml").write_text("no-build = true\n", encoding="utf-8")
     (tmp_path / ".python-version").write_text("3.12\n", encoding="utf-8")
     (tmp_path / "pins").mkdir(exist_ok=True)
     (tmp_path / "pins/.python-versions").write_text("3.12\n", encoding="utf-8")
@@ -2645,8 +2647,9 @@ def test_dockerfile_inputs_refuses_sync_flags_that_change_the_answer(tmp_path, r
         ),
         # Settings the files carry that can change what the sync installs or which Python it picks.
         (
-            "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml uv.toml ./\nRUN uv sync --locked\n",
-            ":3: this COPY brings uv.toml, which uv reads for uv sync.*run it without the uv settings",
+            "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nCOPY cfg/uv.toml ./\n"
+            "RUN uv sync --locked\n",
+            ":4: this COPY brings cfg/uv.toml, which uv reads for uv sync.*run it without the uv settings",
         ),
         (
             "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nCOPY .python-version ./\n"
@@ -2809,6 +2812,97 @@ def test_cli_dockerfile_inputs_uv_sync_without_no_dev_has_the_dev_group(tmp_path
     main(["--dockerfile", str(path), "--dockerfile-inputs", "-p", "3.13", "-t", "linux-x86_64", "--json"])
     names = {package["name"] for package in json.loads(capsys.readouterr().out)["packages"]}
     assert {"devtool", "purewheel"} <= names
+
+
+_SYNC_SELECTION_LOCK = """version = 1
+revision = 3
+requires-python = ">=3.12"
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "purewheel" },
+]
+
+[package.optional-dependencies]
+cli = [
+    { name = "puresdist" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "devtool" },
+]
+docs = [
+    { name = "nativeext" },
+]
+
+[[package]]
+name = "purewheel"
+version = "3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/purewheel-3.1.tar.gz", hash = "sha256:00", size = 1 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/aa/purewheel-3.1-py3-none-any.whl", hash = "sha256:00", size = 1 },
+]
+
+[[package]]
+name = "puresdist"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/puresdist-1.0.tar.gz", hash = "sha256:00", size = 1 }
+
+[[package]]
+name = "devtool"
+version = "0.5"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/aa/devtool-0.5-py3-none-any.whl", hash = "sha256:00", size = 1 },
+]
+
+[[package]]
+name = "nativeext"
+version = "0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/nativeext-0.3.tar.gz", hash = "sha256:00", size = 1 }
+"""
+
+
+@pytest.mark.parametrize(
+    ("run", "expected"),
+    [
+        # uv 0.13.9: the project's dependencies and the default dev group; no extra, no other group.
+        ("uv sync --locked", {"purewheel", "devtool"}),
+        ("uv sync --frozen --no-dev", {"purewheel"}),
+    ],
+)
+def test_cli_dockerfile_inputs_uv_sync_checks_the_lines_selection(tmp_path, capsys, fake_pypi, run, expected):
+    """`wheelgap uv.lock` alone checks every extra and group; the sync line's lock is checked for what uv sync
+    installs: the cli extra (puresdist) and the docs group (nativeext) are left out, and dev only with --no-dev."""
+    (tmp_path / "uv.lock").write_text(_SYNC_SELECTION_LOCK, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8")
+    path = _context(tmp_path, f"FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nRUN {run}\n", files=())
+    main(["--dockerfile", str(path), "--dockerfile-inputs", "-p", "3.13", "-t", "linux-x86_64", "--json"])
+    assert {package["name"] for package in json.loads(capsys.readouterr().out)["packages"]} == expected
+
+
+@pytest.mark.parametrize(
+    ("copy", "ignore"),
+    [("COPY uv.lock pyproject.toml ./", ""), ("COPY . ./", "uv.toml\nDockerfile\n.dockerignore\n")],
+)
+def test_dockerfile_inputs_uv_sync_refuses_a_uv_toml_the_image_doesnt_get(tmp_path, copy, ignore):
+    """The lock check applies a uv.toml beside the lock (sources._uv_build_restrictions: no-build here), but `uv sync`
+    in the image reads only what a COPY brought: one not copied, or left out by .dockerignore, would answer for
+    settings the image doesn't have."""
+    (tmp_path / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
+    (tmp_path / "uv.toml").write_text("no-build = true\n", encoding="utf-8")
+    (tmp_path / ".dockerignore").write_text(ignore, encoding="utf-8")
+    path = _context(tmp_path, f"FROM python:3.13\nWORKDIR /app\n{copy}\nRUN uv sync --locked\n", files=())
+    with pytest.raises(DockerfileError, match=":4: uv.toml sits beside the lock in the build context but no COPY"):
+        dockerfile_requirements(path, uv_syncs={}, pythons=("3.13",))
 
 
 @pytest.mark.parametrize(
