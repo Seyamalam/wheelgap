@@ -253,9 +253,10 @@ A `RUN` command that can't install Python packages with pip or uv:
   a config folder;
 - other programs (`curl`, `wget`, `git`, `go build`, `cargo fetch`, `cmake -E`, compilers), and the JavaScript
   package managers with their scripts turned off (`npm ci --ignore-scripts`, `yarn install --mode=skip-build`),
-  installing named packages globally (`npm install -g pnpm@9`, `yarn global add serve`), which runs their scripts
-  and not the project's, or only asked for their version or settings, as long as their arguments don't name an
-  installer;
+  installing named packages globally (`npm install -g pnpm@9`, `yarn global add serve`) or, for npm, locally too
+  (`npm install left-pad` — npm runs the root package.json's scripts only when no package is named), which runs
+  their scripts and not the project's, or only asked for their version or settings, as long as their arguments
+  don't name an installer;
 - `python -m venv`, `pip --version`/`list`/`check`, `RUN --mount=type=cache` or `tmpfs` over a folder that holds
   neither the requirements file nor a pip config file, `--network`, `--security`;
 - `pip install` (with no pin or upper bound on `pip`) of only `pip`, `setuptools` and `wheel`;
@@ -280,8 +281,9 @@ copy changes the dependency set):
 - a program that runs the project's own code, **also before an install**: a package.json script, named (`npm
   run`/`run-script`/`start`/`test`/`exec`/`explore`/`init`, `yarn`, `pnpm` and `bun` with a script name or
   `run`/`exec`/`dlx`, `deno run`/`task`) or a lifecycle one such as `postinstall` (`npm
-  ci`/`install`/`pack`/`version`/`rebuild`, a bare `yarn`, `yarn`/`pnpm`/`bun install`, unless `--ignore-scripts`
-  or yarn's `--mode=skip-build`), `npx`, a build file (`cargo build`/`check`/`install`/`run`/`test`, which run
+  ci`/`pack`/`version`/`rebuild` or an `npm install` with no package named or with a path, a bare `yarn`,
+  `yarn`/`pnpm`/`bun install`, unless `--ignore-scripts` or yarn's `--mode=skip-build`), `npx`, a build file
+  (`cargo build`/`check`/`install`/`run`/`test`, which run
   build.rs, `cmake` other than `-E` and `--version`, `ninja`, `mvn`, `gradle`, `dotnet`, `bundle`, `composer`) or a
   script file (`node FILE`, `go run`, `cmake -P`, `ruby FILE`, `php FILE`, `java -jar`, and `node`, `ruby` or `php`
   reading a script from a redirect or a pipe, `node < setup.js`);
