@@ -1604,6 +1604,22 @@ def _names_in_folder(copies: list[_Copy], dirs: set[str], folder: str) -> list[t
     return names
 
 
+def _may_carry_package_json(copies: list[_Copy], dirs: set[str], folder: str) -> bool:
+    """Whether a package.json may be in `folder` of the image: an entry the COPY instructions so far may put there
+    (_names_in_folder), or one wheelgap can't list — an unreadable COPY or ADD, or a COPY --from whose tree reaches
+    it. npm runs the scripts of a project's workspaces and file: dependencies for a named install too, so a local
+    `npm install X` is only a plain program while no package.json can be in its working folder yet."""
+    if any(name == "package.json" for name, _ in _names_in_folder(copies, dirs, folder)):
+        return True
+    target = posixpath.join(folder, "package.json")
+    for copy in copies:
+        if copy.error:
+            return True  # ADD or a COPY that isn't read: what it puts in the image isn't known
+        if copy.foreign is not None and (target == copy.dest or target.startswith(copy.dest.rstrip("/") + "/")):
+            return True  # COPY --from lands unknown files in dest's tree
+    return False
+
+
 def _requirement_includes(host: Path, number: int) -> list[tuple[bool, str]]:
     """The files a requirements or constraints file includes with -r or -c, as (whether it's a -c, the path as
     written), found on the same lines and with the same reader (`_line_include`) as `_read_requirements` in
@@ -2474,6 +2490,23 @@ class _Install:
     sync_no_dev: bool = False  # `uv sync --no-dev`
 
 
+def _npm_install_folder(texts: list[str], cwd: str) -> str | None:
+    """The folder npm runs an install in: `--prefix`/`-C`'s value resolved against the RUN's folder, else that
+    folder. None when the value isn't a literal path npm would read: a package.json can't be ruled out then."""
+    folder = cwd
+    for index, text in enumerate(texts):
+        value = None
+        if text in ("--prefix", "-C") and index + 1 < len(texts):
+            value = texts[index + 1]
+        elif text.startswith("--prefix=") or text.startswith("-C="):
+            value = text.partition("=")[2]
+        if value:
+            if not re.fullmatch(r"[A-Za-z0-9_./~-]+", value, re.ASCII):
+                return None
+            folder = posixpath.normpath(posixpath.join(cwd, value))
+    return folder
+
+
 def _local_npm_spec(word: str) -> bool:
     """A package argument that installs the project's own code rather than a registry package: a path
     (`./tools/x`, `file:../lib`), a local tarball (`dist/app-1.0.0.tgz`, which npm resolves as a `file:` even
@@ -2481,13 +2514,13 @@ def _local_npm_spec(word: str) -> bool:
     return word.startswith((".", "/", "~", "file:")) or word.endswith((".tgz", ".tar.gz")) or "@file:" in word
 
 
-def _project_script(base: str, texts: list[str], stdin: bool = False) -> str | None:
+def _project_script(base: str, texts: list[str], stdin: bool = False, npm_project_empty: bool = False) -> str | None:
     """How this command runs the project's own code (`npm run`, `npx`, `cmake -P`), or None if it doesn't. Where an
     option's value may stand before the command word (`npm --prefix web run build`, `go -C app run .`), any word
     counts, so a doubtful command is a script: a warning, never a pass. `stdin`: the command reads its input from a
     redirect or a pipe, which an interpreter runs as a script."""
     if base == "corepack" and texts and texts[0] in ("npm", "npx", "yarn", "pnpm"):
-        return _project_script(texts[0], texts[1:], stdin)
+        return _project_script(texts[0], texts[1:], stdin, npm_project_empty)
     if stdin and base in ("node", "ruby", "php"):
         return base  # `node < setup.js`: the script comes from the redirect or the pipe
     words = [text for text in (texts[: texts.index("--")] if "--" in texts else texts) if not text.startswith("-")]
@@ -2520,10 +2553,14 @@ def _project_script(base: str, texts: list[str], stdin: bool = False) -> str | N
         base == "yarn" and "global" in words
     )
     # npm runs the root package.json's lifecycle scripts only for an install with no package named: a local
-    # `npm install`/`i`/`add` of named packages is a plain program for the same reason a global one is (#725).
-    npm_named_install = base == "npm" and next(
-        (word for word in words if word in _LIFECYCLE_COMMANDS["npm"]), None
-    ) in ("install", "i", "add")
+    # `npm install`/`i`/`add` of named packages is a plain program for the same reason a global one is (#725) —
+    # but only while no package.json can be in its working folder, since a project's workspaces and file:
+    # dependencies are the project's own code, and the pass-over can't rule those out without reading the file.
+    npm_named_install = (
+        base == "npm"
+        and npm_project_empty
+        and next((word for word in words if word in _LIFECYCLE_COMMANDS["npm"]), None) in ("install", "i", "add")
+    )
     packages = [word for word in words if word not in ("global", *_LIFECYCLE_COMMANDS.get(base, ()))]
     if (global_install or npm_named_install) and packages and not any(_local_npm_spec(word) for word in packages):
         scripts_off = True
@@ -2559,8 +2596,18 @@ class _RunReader:
     a command wheelgap can't see into (a warning), or one that installs in a way that isn't read (a DockerfileError).
     """
 
-    def __init__(self, report: InputsReport, pythons: tuple[str, ...] | None = None, image_read: bool = True) -> None:
+    def __init__(
+        self,
+        report: InputsReport,
+        pythons: tuple[str, ...] | None = None,
+        image_read: bool = True,
+        copies: list[_Copy] | None = None,
+        dirs: set[str] | None = None,
+    ) -> None:
         self.report = report
+        # The COPY instructions and image folders so far: the list the stage loop appends to, read as of each RUN.
+        self.copies = copies if copies is not None else []
+        self.dirs = dirs if dirs is not None else set()
         # The Pythons the check is for (-p, else the image's), and whether the image was read (an official python
         # image, whose own Python is in /usr/local/bin) or -p/-t stand in for it. None: not known.
         self.pythons = pythons
@@ -3157,7 +3204,12 @@ class _RunReader:
             return "system-packages", ""
         if base in _SHELL_COMMANDS or base == "find":
             return "shell", ""
-        if spelling := _project_script(base, [word.text for word in args], stdin):
+        texts = [word.text for word in args]
+        empty = False
+        if base in ("npm", "corepack") and cwd is not None:
+            folder = _npm_install_folder(texts, cwd)
+            empty = folder is not None and not _may_carry_package_json(self.copies, self.dirs, folder)
+        if spelling := _project_script(base, texts, stdin, empty):
             return "project-scripts", (spelling, shown)
         if base in _PROGRAMS:
             return "programs", base
@@ -3849,7 +3901,7 @@ def _dockerfile_requirements(
         raise DockerfileError(f"line {number}: {glob} is a glob to the shell, and {why}: {quote}")
 
     python_dirs: dict[str, tuple[int, list[str]]] = {}  # ENV PYTHONPATH and the others: (line, their folders)
-    reader = _RunReader(report, pythons, image_read)
+    reader = _RunReader(report, pythons, image_read, copies, dirs)
     env: dict[str, str] = {}  # the ENV and ARG values wheelgap knows, as the shell of a RUN sees them
     uv_system = False  # ENV UV_SYSTEM_PYTHON=1: uv reads it as --system
     arg_values: dict[str, bool] = {}  # the names in env that an ARG set, and whether --build-arg gave the value
