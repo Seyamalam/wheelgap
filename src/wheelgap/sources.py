@@ -30,6 +30,7 @@ from packaging.version import InvalidVersion, Version
 
 from . import cutoff as cutoffs
 from .cutoff import describe, is_duration, parse_cutoff
+from .targets import PLATFORMS
 
 if TYPE_CHECKING:
     from .targets import Target
@@ -271,6 +272,8 @@ class Source:
     found: DirectoryInput | None = None
     # A pip installation report captures one generating environment, not a cross-platform dependency graph.
     pip_report_env: dict[str, str] | None = None
+    # Its downloads include a musllinux wheel, which only pip on musl accepts: pip resolved the report on musl.
+    pip_report_musl: bool = False
     # Requirements for --deps to resolve: package names on the command line, selected pyproject.toml
     # requirements, or a requirements file's requirement lines.
     specs: list[str] = field(default_factory=list)
@@ -3467,6 +3470,19 @@ def parse_pip_report(path: Path) -> Source:
             host = parsed.hostname if parsed else None
         except ValueError as e:
             raise SourceError(f"{path.name}: {name} has invalid download URL") from e
+        if parsed and parsed.path.endswith(".whl"):
+            try:
+                *_, wheel_tags = parse_wheel_filename(unquote(parsed.path.rsplit("/", 1)[-1]))
+            except InvalidWheelFilename:
+                pass
+            else:
+                platforms = {tag.platform for tag in wheel_tags}
+                # Proof pip resolved on musl only when glibc pip couldn't accept the file: a wheel tagged for
+                # both families (or plain linux_, which both accept) is no evidence either way.
+                if any(t.startswith("musllinux") for t in platforms) and not any(
+                    t.startswith(("manylinux", "linux")) for t in platforms
+                ):
+                    source.pip_report_musl = True
         public_file = bool(parsed and parsed.scheme == "https" and host == "files.pythonhosted.org")
         skip = None
         if info.get("vcs_info") is not None:
@@ -3524,6 +3540,24 @@ def check_report_targets(source: Source, targets: Iterable[Target]) -> None:
             f"{source.label}: pip resolved this report for one environment ({where}), and other targets can "
             f"install other packages, so it can't be checked on {', '.join(other)}: check that target only, "
             "or make a report on each target"
+        )
+    # musl and glibc record the same environment, but pip on musl accepts musllinux wheels and not manylinux
+    # ones, so it can install other packages. A musllinux wheel in the downloads is proof pip resolved on musl
+    # (only pip there accepts one); without one the report can't be told from a glibc one, and musl targets go
+    # unchecked rather than risk the wrong set.
+    if source.pip_report_musl:
+        if wrong := [t.label(True) for t in targets if PLATFORMS[t.platform][0] == "manylinux"]:
+            raise SourceError(
+                f"{source.label}: a download in this report is a musllinux wheel, which only pip on musl accepts, "
+                "so pip resolved it on musl, and other targets can install other packages — it can't be checked "
+                f"on {', '.join(wrong)}: check a musl target, or make a report on glibc"
+            )
+    elif wrong := [t.label(True) for t in targets if PLATFORMS[t.platform][0] == "musllinux"]:
+        raise SourceError(
+            f"{source.label}: pip on musl accepts musllinux wheels but not manylinux ones, so it can install "
+            "other packages than pip on glibc, and the report's environment can't say which of the two pip "
+            f"resolved it on — it can't be checked on {', '.join(wrong)}: a report made on musl is known by a "
+            "musllinux wheel in its downloads, which only pip on musl accepts"
         )
 
 
