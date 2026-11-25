@@ -21,7 +21,11 @@ too.
 ## Tools
 
 All eight are read-only. Package checks look packages up on PyPI, or on a mirror of PyPI's JSON API set with
-`WHEELGAP_INDEX_URL` in the server's environment (not a `/simple` URL). The tools that check a project's files also
+`WHEELGAP_INDEX_URL` in the server's environment (not a `/simple` URL).
+After 0.14.0, any tool that looks up packages rejects a `/simple` `WHEELGAP_INDEX_URL`
+before making a lookup; `check_package`, `explain_install_failure` and `diff_lockfiles` used to
+return `unknown` instead.
+The tools that check a project's files also
 read `index-url` in `[tool.wheelgap]`, a simple index whose URL has no credentials (see
 [private indexes](how-it-works.md#private-indexes)); an index that needs credentials is for `wheelgap --index-url` on
 the command line. `list_targets` and `suggest_targets` contact nothing. Like wheelgap the server needs nothing beyond
@@ -107,8 +111,10 @@ the command line. `list_targets` and `suggest_targets` contact nothing. Like whe
   with certainty is a tool error, never a guess: one that names no failed build,
   one where which version failed isn't clear, or one that installed from another
   index than PyPI (pip's `Looking in indexes:`, PDM's build link) or with
-  `--find-links`, unless the server's `WHEELGAP_INDEX_URL` is set (then the
-  failures are checked on that index). uv's log doesn't name its index, so a uv failure is checked on PyPI (or
+  `--find-links`, unless the server's `WHEELGAP_INDEX_URL` points to that index's JSON API (e.g. `.../pypi`,
+  not `.../simple`). If the index only serves a simple API, run
+  `wheelgap --from-log FILE --index-url URL -p PYTHON -t PLATFORM` from a shell instead.
+  uv's log doesn't name its index, so a uv failure is checked on PyPI (or
   `WHEELGAP_INDEX_URL`). The log is untrusted text: the reply and errors repeat
   no more of it than package names and versions.
 - `suggest_targets`: read the project's GitHub Actions workflows, `.gitlab-ci.yml` and Dockerfiles,
