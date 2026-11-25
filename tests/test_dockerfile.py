@@ -4749,8 +4749,12 @@ def test_dockerfile_requirements_warns_about_project_code_before_an_install(tmp_
     ]
     assert report.passed_over == ({"shell": [4]} if "|" in run else {})  # `cat` before the pipe
     # With --deps, what it installed first changes the dependencies pip fetches: it stops, as a COPY --from does.
+    # The stop quotes the command in full, as the warning does: the first word or two can't say which was meant.
     path = _context(tmp_path, f"FROM python:3.13\nWORKDIR /app\nCOPY requirements.txt .\nRUN {run}\n{_INSTALL}")
-    with pytest.raises(DockerfileError, match=f":4: {spelling} runs the project's own code, which may install Python"):
+    with pytest.raises(
+        DockerfileError,
+        match=rf":4: this line runs `{re.escape(shown)}`, which runs the project's own code and may install Python",
+    ):
         dockerfile_requirements(path, constraints={}, dependencies=True)
 
 

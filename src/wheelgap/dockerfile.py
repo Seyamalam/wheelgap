@@ -4189,12 +4189,13 @@ def _dockerfile_requirements(
             )
         if dependencies and install.scripts:
             # As for a COPY --from before an install: what the project's code installed first, pip keeps, and with
-            # --deps that changes the dependency set the install fetches.
-            line, spelling, _, _, _ = report.scripts[0]
+            # --deps that changes the dependency set the install fetches. The command is quoted in full, as the
+            # warning quotes it: the first word or two can't say which part of the line was meant.
+            line, _, shown_command, _, _ = report.scripts[0]
             where = "on the same line" if line == number else f"on line {number}"
             raise DockerfileError(
-                f"line {line}: {spelling} runs the project's own code, which may install Python packages before the "
-                f"install {where}, and with --deps they change what that install fetches"
+                f"line {line}: this line runs `{shown_command}`, which runs the project's own code and may install "
+                f"Python packages before the install {where}; with --deps they change what that install fetches"
             )
         installs_read.append((number, install.scripts))
         foreign = [
