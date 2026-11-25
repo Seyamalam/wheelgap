@@ -114,9 +114,9 @@ folder unless [`--dockerfile-context DIR`](#dockerfile-context) names another, a
 `--github-annotations` message. `[tool.wheelgap]` and `.python-version` are read from that folder too. Without this
 flag, `--dockerfile` reads only the image.
 
-**What the answer is.** The Python packages the final image gets from the `pip install` and `uv pip install` lines
-wheelgap can read. It is not "everything in the image": system packages, what the base image ships and anything a
-script installs are outside it. Every line of the final stage falls into one of three groups, and the answer says
+**What the answer is.** The Python packages the final image gets from the `pip install`, `uv pip install` and
+(**after 0.14.0**) `uv sync` lines wheelgap can read. It is not "everything in the image": system packages, what the
+base image ships and anything a script installs are outside it. Every line of the final stage falls into one of three groups, and the answer says
 which lines it did not look at:
 
 | | What wheelgap does |
@@ -138,6 +138,7 @@ When no install line is left to read, that is an error too, and it names the lin
 | `RUN pip install -r FILE` — also `pip3`, `python -m pip`, `python3 -m pip`, `/usr/local/bin/pip`; `pythonX.Y -m pip` and `pipX.Y` when X.Y is every Python checked; a venv's `pip` when an earlier `python -m venv` made it, also through `ENV PATH=/venv/bin:$PATH` (with `$NAME` from an earlier `ENV` or `ARG` expanded, as BuildKit does: `ENV PATH="$VIRTUAL_ENV/bin:$PATH"`) or `. /venv/bin/activate` | The file's requirements, with `-c FILE` and the flags below |
 | `RUN pip install NAME`, `NAME==VERSION`, `"NAME>=1,<2"`, `NAME[extra]`, alone or beside `-r FILE` — `RUN pip install numpy==2.3.4`, `pip install "numpy<3" pandas`, `pip install 'uvicorn[standard]'` | Checked the way requirements given on wheelgap's own command line are (`wheelgap numpy==2.3.4 pandas`): a pin is that version, and anything else is the newest release pip would pick today, with a note (`Dockerfile:5: RUN pip install names 1 unpinned package (pandas), so the newest matching release was checked`). Each such line is its own source in the report, labelled `Dockerfile:5`, and `--json` lists the lines in [`dockerfile_packages`](output.md#json). What the names pull in is checked with `--deps`, as for any input, extras included. A name written with a variable is read when the variable has a literal value from an earlier `ENV` or `ARG` (`ARG TORCH=2.4.1` then `pip install torch==$TORCH`), with a note that the `ARG`'s default was used (pass `--build-arg` if your build sets another). Only a line that names nothing but `pip`, `setuptools` and `wheel` is passed over; `pip install uv` or `poetry` is checked like any other package |
 | `RUN uv pip install --system -r FILE` | The file's requirements as uv installs them (below), with `-c FILE` and uv's flags. The `COPY --from=ghcr.io/astral-sh/uv[:TAG] /uv /uvx DEST/` that puts uv in the image is read (`/uvx` is optional) |
+| `RUN uv sync --locked` or `--frozen` (**after 0.14.0**) | The `uv.lock` and `pyproject.toml` in the folder the line runs in, followed back to the build context as a `-r` file is — they must come from beside each other there — and the lock is checked as `wheelgap uv.lock` is, with `uv sync`'s own selection: the project's dependencies and its default groups, `--no-dev` leaving the dev group out as uv does. The project itself is listed as skipped, as an editable is for `wheelgap uv.lock`; when it has a `[build-system]`, uv builds it in the image, and the build requirements it fetches for that, which the lock doesn't pin, aren't checked. The sync's flags and files, and what it refuses, are below |
 | `python --version`, `pip --version`, `pip list`/`freeze`/`show`/`check` | Install nothing, whatever the `PATH` |
 
 **The supporting instructions.**
@@ -176,6 +177,29 @@ them (`--no-input`, `--disable-pip-version-check`, `--root-user-action`, `--pref
 | `-r FILE` / `--requirement FILE` and `-c FILE` / `--constraint FILE` (uv also spells them `--requirements`, `--constraints`) | Only `*.txt` or `*.in` files: uv reads other names as locks, scripts or projects |
 | `--no-cache`, `--no-cache-dir`, `--upgrade` / `-U`, `-q` / `--quiet`, `--compile-bytecode` (and its alias `--compile`), `--no-progress`, `--break-system-packages`, `--strict` (it only warns after the install), `--no-python-downloads`, `--no-deps` | Taken with no value |
 | `--link-mode clone` / `copy` / `hardlink` / `symlink` (or `=copy`) | uv's only values |
+
+**`uv sync` flags** (**after 0.14.0**). Exactly one of `--locked` and `--frozen` is required: without one uv may
+relock, and the copied lock may then not be what the image gets. `--no-dev` and the harmless global flags may join
+it after `sync`; `uv --quiet sync --locked` (a global flag before the subcommand) is an error, and so is every other
+flag, since it may change the installed set.
+
+| Flag | Read |
+| --- | --- |
+| `--locked` or `--frozen` | Exactly one, required: uv doesn't relock |
+| `--no-dev` | The dev group is left out of the check, as uv leaves it out of the image |
+| `-q` / `--quiet`, `--no-cache` / `--no-cache-dir`, `--no-progress`, `--no-python-downloads` | Taken with no value |
+
+The line is the selection: `--extra`, `--all-extras`, `--group`, `--only-group` and `--no-dev` on wheelgap's command
+line are an error with it (they would check another set than the image gets), and `[tool.wheelgap]` `extras` and
+`groups` don't change it. With none of the refusals below, uv 0.13.9 creates `.venv` from the image's own Python (it
+downloads one only when no Python it finds satisfies `requires-python`), so the image's Python and platform are the
+target — unless the project pins one:
+
+**A `.python-version` a `COPY` puts in the project's folder is read**: its pin is the Python `uv sync` installs
+for, so that Python is checked — it must be among the `-p` Pythons when `-p` is given, and a pin that isn't the
+image's Python is an error when another install in the stage installs the image's (the answer can't split Pythons).
+A patch pin is checked at its `X.Y`'s newest patch release, as an image's is. A pin that isn't a CPython `X.Y`,
+`X.Y.Z` or `X.Yt` version is an error.
 
 **`ENV` and `ARG` settings.** These don't change
 which files are picked, and are fine: `PIP_NO_CACHE_DIR`, `PIP_CACHE_DIR`, `PIP_DISABLE_PIP_VERSION_CHECK`,
@@ -289,7 +313,11 @@ wheelgap reads, in an earlier `RUN` or earlier on the same one.
 | `-i` / `--index-url`, `--extra-index-url`, `-f` / `--find-links`, `--no-index`, `--trusted-host` (and uv's `--index`, `--default-index`) | The files on another index can differ from PyPI's, and only PyPI is checked. A requirements *file* with such a line is still read against PyPI alone today, a known gap that isn't copied here | Check the other index's files on the command line instead |
 | Any other `pip install` flag — `--require-hashes`, `--pre`, `--only-binary`, `--user`, `--target`, `--ignore-installed`, `-e`, combined short flags such as `-Uq`, `--requirement=FILE` — or a value pip doesn't take (`--progress-bar pretty`); on a `uv pip install` line, any flag not in the uv table above, pip's own among them | It may change what the installer picks, or make it exit | Drop the flag if the build doesn't need it; write `--requirement=FILE` as `-r FILE` and a combined flag such as `-Uq` as `-U -q` |
 | A `uv pip install` without `--system` (or an earlier `ENV UV_SYSTEM_PYTHON=1`) | uv then installs into a virtual environment, not the image's Python | Add `--system` |
-| `pip uninstall`/`download`/`config`, `uv sync` and every other `uv` command (`uv add`, `uv pip sync`), `poetry`, `pdm`, `pipenv`, `conda`, `mamba`, `pipx`, `easy_install`, `hatch`, `pixi`, `python setup.py` | Python packages installed a way that isn't read | Install with `pip install -r` or `uv pip install --system -r` |
+| `pip uninstall`/`download`/`config`, `uv sync` in another form than `--locked` or `--frozen` (optionally `--no-dev`, **after 0.14.0**) and every other `uv` command (`uv add`, `uv pip sync`), `poetry`, `pdm`, `pipenv`, `conda`, `mamba`, `pipx`, `easy_install`, `hatch`, `pixi`, `python setup.py` | Python packages installed a way that isn't read | Install with `pip install -r` or `uv pip install --system -r`, or sync with `uv sync --locked` |
+| A `uv.lock` or `pyproject.toml` no `COPY` brings before a `uv sync` line, or any `COPY --from` before it other than uv's own `/uv /uvx` (whose files wheelgap can't read), the two from different folders of the build context, or a cache or tmpfs mount over them | The image's pair may not be one project, or the build may read another file than the one on disk | `COPY` the lock and `pyproject.toml` in together, from beside each other in the build context |
+| For a `uv sync` line, a `uv.toml` or `[tool.uv]` table uv would read settings from, or a `uv.toml` with settings beside the lock in the build context that the image doesn't get (not copied, or left out by `.dockerignore`) | uv resolves with those settings, so the check would follow settings the image doesn't use — or miss the ones it does | Copy the requirements the lock pins into a `-r` file instead, or keep uv's settings out of the build |
+| For a `uv sync` line, a `.python-version` an earlier `RUN` writes, one a `COPY` puts above the project's folder (uv 0.13.9 reads it only when that folder is the workspace root, which isn't read) or in uv's config folder (`~/.config/uv`, where `uv python pin --global` writes), a `.python-versions` (uv 0.13.9 reads its first version), a `.venv` in the project's folder, or `UV_PROJECT_ENVIRONMENT` (in an `ENV`, an `ARG` with a value, or on the `RUN`) | Each may give the sync a Python or environment the check doesn't know | `COPY` a `.python-version` into the project's folder instead — it is read, above — or drop the file or setting |
+| A `pyproject.toml` `requires-python` the `uv sync` line's Python doesn't satisfy | uv sync fails there, so the image gets nothing | Match the image's Python, or the `.python-version` pin, to the project |
 | A pip or python at a path other than `/usr/local/bin` or a venv an earlier `python -m venv` made (`/usr/bin/python3` is Debian's, not the official image's — when `-p`/`-t` stand in for an image wheelgap can't read, `/usr/bin` and the other bin folders are read too) | Another Python than the one checked | Install with the image's own `pip` (`/usr/local/bin`), or a venv an earlier `python -m venv` made |
 | `pythonX.Y`, `pipX.Y` or a venv made by one, when X.Y isn't every Python checked | Another Python than the one checked | Check only that Python: `-p X.Y` |
 | A bare `pip`, `python` or `uv` after `ENV PATH`, `PATH=…`, `export PATH=…` or `. …/bin/activate` puts a folder first that isn't the image's or such a venv's, or after bash's `hash -p` names the file a command runs | Which program runs is unknown | Name `/usr/local/bin/pip`, or keep the image's `PATH` |

@@ -2285,6 +2285,8 @@ def _main(argv: list[str], project: Path | None = None) -> int:
     docker_constraints: dict[Path, tuple[Path, ...]] = {}
     docker_line_files: dict[Path, tuple[Path, ...]] = {}  # each file's -r files of its pip install line, in order
     uv_installs: set[tuple[int, Path]] = set()
+    # (line, lock) -> (its --no-dev, its pyproject.toml, its .python-version pin or None, that file or None)
+    uv_syncs: dict[tuple[int, Path], tuple[bool, Path, str | None, Path | None]] = {}
     image: ImageTarget | None = None
     unknown_image: UnknownImageError | None = None
     # What the Dockerfile answer leaves out, for --json's dockerfile_notes: {"dockerfile", "line", "kind", "message"}.
@@ -2337,6 +2339,7 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 line_files=docker_line_files,
                 dependencies=args.deps,
                 uv_installs=uv_installs,
+                uv_syncs=uv_syncs,
                 report=inputs_report,
                 pythons=docker_pythons or ([image.python] if image is not None else None),
             )
@@ -2406,6 +2409,14 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 dockerfile_notes += notes
             if not quiet:
                 for install_line, requirements in installs:
+                    if (install_line, requirements) in uv_syncs:
+                        _, pyproject, _, pin_file = uv_syncs[install_line, requirements]
+                        read = f"{requirements}, {pyproject}" + (f", {pin_file}" if pin_file is not None else "")
+                        print(
+                            f"wheelgap: note: {args.dockerfile}:{install_line}: RUN uv sync reads {read}",
+                            file=sys.stderr,
+                        )
+                        continue
                     # Every file read: the requirements file and what it includes, then each -c file of the line
                     # and what that includes (a -r in a constraints file is requirements, a -c more constraints).
                     files = ", ".join(
@@ -2447,6 +2458,42 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                     args.target = [musl_docker_names(item) for item in args.target]
                 config.update(python=[image.python], targets=[image.platform])
                 config.update({k: v for k, v in (("glibc", image.glibc), ("musl", image.musl)) if v})
+        # A `uv sync` line's copied .python-version picks the Python its lock installs for: that Python must be
+        # checked, as a venv's must be, and the answer can't split Pythons between the sync and other installs.
+        sync_pin = next((v for v in uv_syncs.values() if v[2] is not None), None)
+        if sync_pin is not None:
+            sync_line = next(line for (line, _), v in uv_syncs.items() if v is sync_pin)
+            pin_full = sync_pin[2]
+            assert pin_full is not None
+            m = re.fullmatch(r"(\d+\.\d+)(\.\d+)?(t?)", pin_full)
+            assert m is not None  # dockerfile.py only records a pin in this shape
+            pin_short, pin_patch = m[1] + m[3], m[2]
+            if args.python:
+                if pin_short not in docker_pythons:
+                    raise DockerfileError(
+                        f"{args.dockerfile}:{sync_line}: `uv sync` installs Python {pin_full} (its "
+                        f".python-version), which the check's Python ({', '.join(docker_pythons)}) doesn't "
+                        f"cover: check {pin_short} instead"
+                    )
+            else:
+                if image is not None and pin_short != image.python:
+                    others = [line for line, requirements in installs if (line, requirements) not in uv_syncs]
+                    others += [line for line, *_ in inputs_report.named]
+                    if others:
+                        raise DockerfileError(
+                            f"{args.dockerfile}:{sync_line}: `uv sync` installs Python {pin_short} (its "
+                            f".python-version), but the install on line {min(others)} installs the image's "
+                            f"{image.python}: --dockerfile-inputs checks one Python, and can't answer for both"
+                        )
+                config["python"] = [pin_short]
+            if pin_patch:
+                # As for an image's patch pin: the check is for X.Y at its newest patch release.
+                print(
+                    f"wheelgap: note: {args.dockerfile}:{sync_line}: .python-version pins Python {sync_pin[2]}; "
+                    f"wheelgap checks {pin_short} at its newest patch release, so a package that needs a later "
+                    f"{pin_short} patch isn't flagged",
+                    file=sys.stderr,
+                )
         glibc_version, musl_version = libc_versions(args, config)
         pythons = (
             args.python
@@ -2548,9 +2595,14 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 # RUN line, labelled with it, checked as names on wheelgap's own command line are.
                 # pip reads a `pip install -r FILE` file as requirements whatever its name, except a PEP 751 lock
                 # name (pylock.toml, pylock.NAME.toml), which pip 26.1 and later install as that lock; a uv line's
-                # file keeps the reader its name picks.
+                # file keeps the reader its name picks, and a `uv sync` line's lock is read as uv.lock whatever its
+                # context name (in the image it is uv.lock, which is what uv sync looks for).
                 docker_kinds = {
-                    req: "pylock" if _PIP_PYLOCK_NAME_RE.fullmatch(req.name) else "requirements"
+                    req: "uv"
+                    if (line, req) in uv_syncs
+                    else "pylock"
+                    if _PIP_PYLOCK_NAME_RE.fullmatch(req.name)
+                    else "requirements"
                     for line, req in installs
                     if (line, req) not in uv_installs
                 }
@@ -2684,6 +2736,19 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                     )
                 select_pyproject_groups(source, args.group or [], args.only_group or [])
                 select_pyproject_extras(source, args.extra or [], args.all_extras)
+        # A `uv sync` line's own flags are its lock's selection, applied below even with no selectors of
+        # wheelgap's own: `wheelgap uv.lock` with no flags checks all groups and extras, but a sync without them
+        # installs the defaults (and dev only without --no-dev). The line is what the image installs, so wheelgap's
+        # own selectors don't apply to its lock: on the command line they are an error (as they are for a -r file
+        # of the Dockerfile), and configured ones ([tool.wheelgap] extras and groups) leave it as the line says.
+        sync_locks = {requirements: line for line, requirements in installs if (line, requirements) in uv_syncs}
+        if sync_locks and (from_cli or args.only_group):
+            sync_line = min(sync_locks.values())
+            raise SourceError(
+                "--extra, --all-extras, --group, --only-group and --no-dev don't apply to --dockerfile-inputs: "
+                f"`uv sync` on {args.dockerfile}:{sync_line} picks what the image installs"
+            )
+        lock_sources = [s for s in lock_sources if s.path not in sync_locks]
         if (from_cli or args.only_group or extra_names is not None or group_names is not None) and (
             lock_sources or not pyproject_sources
         ):
@@ -2703,6 +2768,10 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 poetry=bool(from_cli or args.only_group) or group_names is not None or extra_names is not None,
                 pdm=bool(from_cli or args.only_group) or group_names is not None,
             )
+        for source in sources:
+            if source.path in sync_locks and source.pyproject_extras is None:
+                no_dev, _, _, _ = uv_syncs[sync_locks[source.path], source.path]
+                select_uv_dependencies([source], UvSelection(no_dev=no_dev), strict=False)
         if args.deps:
             dependency_sources = [s for s in sources if s.specs or s.pyproject_extras is not None]
             if not dependency_sources:
