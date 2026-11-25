@@ -2606,7 +2606,7 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 print(
                     "wheelgap: note: the install log's build ran on PyPy, and wheelgap checks CPython wheels "
                     "only: the answers are for CPython and don't say why the build failed there (PyPy wheels "
-                    "differ, pp311 rather than cp311)",
+                    "carry pp tags, such as pp311, not cp ones)",
                     file=sys.stderr,
                 )
             listed = ", ".join(

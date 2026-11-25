@@ -649,8 +649,8 @@ def test_a_pypy_log_gets_the_cpython_only_note_instead(capsys, fake_pypi):
     assert (pkg["name"], pkg["results"]) == ("fastlib", {"linux-x86_64": "wheel"})
     assert (
         "wheelgap: note: the install log's build ran on PyPy, and wheelgap checks CPython wheels only: "
-        "the answers are for CPython and don't say why the build failed there (PyPy wheels differ, "
-        "pp311 rather than cp311)\n"
+        "the answers are for CPython and don't say why the build failed there (PyPy wheels carry pp tags, "
+        "such as pp311, not cp ones)\n"
     ) in err
     # Never the CPython reading: the log doesn't come from another -p/-t, it comes from PyPy.
     assert "has a wheel" not in err

@@ -1353,7 +1353,7 @@ def _explain_install_failure(args: dict[str, Any]) -> dict[str, Any]:
     if on_pypy:
         notes.append(
             "the install log's build ran on PyPy, and wheelgap checks CPython wheels only: the answers are for "
-            "CPython and don't say why the build failed there (PyPy wheels differ, pp311 rather than cp311)"
+            "CPython and don't say why the build failed there (PyPy wheels carry pp tags, such as pp311, not cp ones)"
         )
     unversioned = {canonicalize_name(name) for name, version in failures if version is None}
     for r in results:

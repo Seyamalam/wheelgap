@@ -3039,7 +3039,7 @@ def test_explain_install_failure_pypy_log_gets_the_cpython_only_note(fake_pypi):
     assert {p["name"]: p["results"] for p in data["packages"]} == {"fastlib": {"3.13 linux-x86_64": "wheel"}}
     assert data["notes"] == [
         "the install log's build ran on PyPy, and wheelgap checks CPython wheels only: the answers are for "
-        "CPython and don't say why the build failed there (PyPy wheels differ, pp311 rather than cp311)"
+        "CPython and don't say why the build failed there (PyPy wheels carry pp tags, such as pp311, not cp ones)"
     ]
 
 
