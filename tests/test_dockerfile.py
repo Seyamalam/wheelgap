@@ -2953,8 +2953,10 @@ def test_dockerfile_inputs_uv_sync_reads_the_nearest_python_version(tmp_path):
     assert uv_syncs[(5, tmp_path / "app/uv.lock")][2:] == ("3.12", tmp_path / "app/.python-version")
 
 
-def test_dockerfile_inputs_uv_sync_reads_an_ancestor_python_version(tmp_path):
-    """With none in the project's folder, an ancestor's .python-version is the pin."""
+def test_dockerfile_inputs_uv_sync_refuses_an_ancestor_python_version(tmp_path):
+    """uv 0.13.9 reads a .python-version above the project's folder only up to the workspace root (one above a plain
+    project is ignored), and which folder roots the workspace isn't read: with none in the project's folder, one
+    copied above it is refused, not taken as the pin."""
     (tmp_path / "app").mkdir()
     (tmp_path / "app/uv.lock").write_text("purewheel==3.1\n", encoding="utf-8")
     (tmp_path / "app/pyproject.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
@@ -2964,9 +2966,8 @@ def test_dockerfile_inputs_uv_sync_reads_an_ancestor_python_version(tmp_path):
         "FROM python:3.13\nWORKDIR /app\nCOPY app/ /app/\nCOPY .python-version /\nRUN uv sync --locked\n",
         files=(),
     )
-    uv_syncs: dict = {}
-    assert dockerfile_requirements(path, uv_syncs=uv_syncs) == [(5, tmp_path / "app/uv.lock")]
-    assert uv_syncs[(5, tmp_path / "app/uv.lock")][2:] == ("3.11", tmp_path / ".python-version")
+    with pytest.raises(DockerfileError, match=r"line 4: a \.python-version in a folder above the project's may make"):
+        dockerfile_requirements(path, uv_syncs={})
 
 
 @pytest.mark.parametrize("version", ["pypy", "3", "cpython-3.12.4-20241016", "/usr/bin/python3.12", "3.12.4.5"])

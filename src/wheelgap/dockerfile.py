@@ -3590,7 +3590,8 @@ def dockerfile_requirements(
     its copied .python-version pins or None, that file or None). The project must sit in the folder the line runs in
     (uv searches ancestors too, which isn't read), the lock and pyproject.toml must come from beside each other in
     the build context (the lock's selection is read from a pyproject.toml beside it on disk), a second `uv sync` line, a
-    copied uv.toml or [tool.uv] table, a .python-version one an earlier RUN writes, a copied .python-versions, a
+    copied uv.toml or [tool.uv] table, a .python-version one an earlier RUN writes or a COPY puts above the
+    project's folder, a copied .python-versions, a
     .python-version in uv's config folder, a copied .venv, a pin that isn't a CPython X.Y, X.Y.Z or X.Yt, a
     requires-python the sync's Python doesn't satisfy, and UV_PROJECT_ENVIRONMENT are all DockerfileError, naming
     the line.
@@ -3924,8 +3925,8 @@ def _dockerfile_requirements(
                 "environment with a Python --dockerfile-inputs doesn't know"
             )
         # A .python-version, a .venv uv would reuse, or a config file changes which Python and packages the sync
-        # gets. A copied .python-version in the project's folder or an ancestor is read and its pin checked as the
-        # sync's Python; one created earlier, a .python-versions (uv 0.13.9 reads its first version), the global pin
+        # gets. A copied .python-version in the project's folder is read and its pin checked as the sync's Python;
+        # one above it, one created earlier, a .python-versions (uv 0.13.9 reads its first version), the global pin
         # `uv python pin --global` writes in its user config folder ($XDG_CONFIG_HOME/uv or ~/.config/uv — any
         # folder called uv counts) and a copied .venv are errors, as they were. A .venv a plain `python -m venv`
         # makes is not one (reader.venvs knows its Python is the image's).
@@ -3997,21 +3998,27 @@ def _dockerfile_requirements(
                 "but no COPY brings it beside the lock in the image, so `uv sync` there doesn't read it, and "
                 "wheelgap's lock check would apply its settings"
             )
-        # uv reads the nearest .python-version at the folder the sync runs in or an ancestor, resolved like the
-        # lock; an ignore rule that leaves one out of a copied folder means the image has none there.
-        folder: str | None = install.cwd
-        while pin_file is None and folder is not None:
-            target = posixpath.normpath(posixpath.join(folder, ".python-version"))
-            if mount := next((m for m in install.mounts if (target + "/").startswith(m.rstrip("/") + "/")), None):
-                raise DockerfileError(
-                    f"line {number}: a cache or tmpfs mount over {mount} covers {target} while this RUN runs, so "
-                    "the install may read another file than the one COPY put there"
-                )
-            if (
-                host := _copied_file_or_none(copies, target, context, number, ignore_rules, ignored_is_absent=True)
-            ) is not None:
-                pin_file = host
-            folder = None if folder == "/" else posixpath.dirname(folder)
+        # uv 0.13.9 reads the .python-version in the project's folder, and with none there one in a folder above it
+        # only up to the workspace root (one above a plain project is ignored), so a pin in the sync's folder is
+        # read, resolved like the lock (an ignore rule that leaves it out of a copied folder means the image has
+        # none there), and one copied above it is refused, as which project roots the workspace isn't read.
+        target = posixpath.join(install.cwd, ".python-version")
+        if mount := next((m for m in install.mounts if (target + "/").startswith(m.rstrip("/") + "/")), None):
+            raise DockerfileError(
+                f"line {number}: a cache or tmpfs mount over {mount} covers {target} while this RUN runs, so "
+                "the install may read another file than the one COPY put there"
+            )
+        pin_file = _copied_file_or_none(copies, target, context, number, ignore_rules, ignored_is_absent=True)
+        if pin_file is None and (
+            copy_line := _copied_name(
+                copies, (".python-version",), lambda folder: folder in ancestors and folder != install.cwd, ignore_rules
+            )
+        ):
+            raise DockerfileError(
+                f"line {copy_line}: a .python-version in a folder above the project's may make `uv sync` on line "
+                f"{number} use another Python than the one checked (uv reads it when that folder is the workspace "
+                "root, which --dockerfile-inputs doesn't read)"
+            )
         if pin_file is not None:
             try:
                 written = pin_file.read_bytes().decode("utf-8-sig").splitlines()[0].strip()
