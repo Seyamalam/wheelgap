@@ -999,6 +999,10 @@ def test_list_targets_rejects_invalid_compatibility_version(capsys):
     assert code == 2 and not out
     assert "can't parse glibc version" in err
 
+    code, out, err = run(capsys, "--list-targets", "--glibc", "2")
+    assert code == 2 and not out
+    assert "glibc version '2' needs a minor version too" in err
+
 
 def test_defaults_from_pyproject(capsys, fixtures):
     code, out, _ = run(capsys, str(fixtures / "configproj"), "--json")
@@ -6332,4 +6336,23 @@ def test_requirements_file_conflicting_with_constraint_fails_without_lookup(caps
     assert "unknown" in out
     expected = "could not check idna: requirement idna==3.6 conflicts with the constraint idna==3.7 (pip refuses this)"
     assert expected in out
+    assert fake_pypi == []
+
+
+def test_pyproject_non_table_tool_exits_with_source_error(capsys, tmp_path, fake_pypi):
+    req = tmp_path / "requirements.txt"
+    req.write_text("idna==3.10\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("tool = 1\n", encoding="utf-8")
+
+    code, out, err = run(capsys, str(req), "-p", "3.13", "-t", "linux-x86_64")
+    assert code == 2 and not out
+    assert "[tool] must be a table" in err
+    assert "AttributeError" not in err
+
+    code, out, err = run(capsys, str(req), "-p", "3.13", "-t", "linux-x86_64", "--json")
+    assert code == 2
+    payload = json.loads(out)["error"]
+    assert set(payload) == {"message", "type"}
+    assert "[tool] must be a table" in payload["message"]
+    assert payload["type"] == "SourceError"
     assert fake_pypi == []
