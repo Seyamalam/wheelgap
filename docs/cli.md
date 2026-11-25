@@ -281,10 +281,10 @@ copy changes the dependency set):
 - a program that runs the project's own code, **also before an install**: a package.json script, named (`npm
   run`/`run-script`/`start`/`test`/`exec`/`explore`/`init`, `yarn`, `pnpm` and `bun` with a script name or
   `run`/`exec`/`dlx`, `deno run`/`task`) or a lifecycle one such as `postinstall` (`npm
-  ci`/`pack`/`version`/`rebuild` or an `npm install` with no package named or with a path, a bare `yarn`,
-  `yarn`/`pnpm`/`bun install`, unless `--ignore-scripts` or yarn's `--mode=skip-build`), `npx`, a build file
-  (`cargo build`/`check`/`install`/`run`/`test`, which run
-  build.rs, `cmake` other than `-E` and `--version`, `ninja`, `mvn`, `gradle`, `dotnet`, `bundle`, `composer`) or a
+  ci`/`pack`/`version`/`rebuild`, an `npm install` with no package named or with a path, tarball or `file:`
+  alias, a bare `yarn`, `yarn`/`pnpm`/`bun install`, unless `--ignore-scripts` or yarn's `--mode=skip-build`),
+  `npx`, a build file (`cargo build`/`check`/`install`/`run`/`test`, which run build.rs, `cmake` other than `-E`
+  and `--version`, `ninja`, `mvn`, `gradle`, `dotnet`, `bundle`, `composer`) or a
   script file (`node FILE`, `go run`, `cmake -P`, `ruby FILE`, `php FILE`, `java -jar`, and `node`, `ruby` or `php`
   reading a script from a redirect or a pipe, `node < setup.js`);
 - a program whose arguments name an installer (`node -e "…execSync('pip install x')"`, `ruby -e`,

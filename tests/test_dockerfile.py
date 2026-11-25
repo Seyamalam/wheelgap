@@ -4819,7 +4819,24 @@ def test_dockerfile_requirements_passes_over_a_local_npm_install_of_named_packag
 
 
 @pytest.mark.parametrize(
-    "run", ["npm install", "npm install --no-save", "npm install ./tools/x", "npm install file:../lib"]
+    "run",
+    [
+        "npm install",
+        "npm install --no-save",
+        "npm install ./tools/x",
+        "npm install file:../lib",
+        # The value of an option that takes one is no package: these are all bare installs of a project.
+        "npm install --prefix frontend",
+        "npm --prefix web install",
+        "npm -C web install",
+        "npm install --omit dev",
+        "npm install -w web",
+        "npm install --registry https://npm.example.test",
+        # A local tarball or a file: alias installs the project's own code too.
+        "npm install dist/app-1.0.0.tgz",
+        "npm install dist/app-1.0.0.tar.gz",
+        "npm install mylib@file:../lib",
+    ],
 )
 def test_dockerfile_requirements_warns_about_a_local_npm_install_of_the_project(tmp_path, run):
     # No package named, or a path: the project's own scripts run, before the install and after it.
@@ -4827,6 +4844,24 @@ def test_dockerfile_requirements_warns_about_a_local_npm_install_of_the_project(
     assert [line for line, _ in report.warnings] == [4]
     _, report = _inputs(tmp_path, f"{_INSTALL}RUN {run}\n")
     assert [line for line, _ in report.warnings] == [5]
+    # With --deps, a bare install before the pip install still stops the read.
+    path = _context(tmp_path, f"FROM python:3.13\nWORKDIR /app\nCOPY requirements.txt .\nRUN {run}\n{_INSTALL}")
+    with pytest.raises(DockerfileError, match="runs the project's own code"):
+        dockerfile_requirements(path, constraints={}, dependencies=True)
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        # A registry package named after the option's value: still a plain program.
+        "npm install --registry https://npm.example.test left-pad",
+        "npm install --omit dev left-pad",
+        "npm install -w web left-pad",
+    ],
+)
+def test_dockerfile_requirements_passes_over_an_npm_install_named_after_its_options(tmp_path, run):
+    lines, report = _inputs(tmp_path, f"RUN {run}\n{_INSTALL}")
+    assert lines == [5] and report.warnings == [] and list(report.passed_over) == ["programs"]
 
 
 @pytest.mark.parametrize("run", ["npm install -g", "npm install -g ./tools/cli", "yarn global add file:./cli"])

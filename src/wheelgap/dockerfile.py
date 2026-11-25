@@ -2256,6 +2256,13 @@ _NODE_PROBES = frozenset("-v --version -h --help".split())
 # The options of the script runners that take a value as the next word, which isn't the command (`yarn --cwd web build`,
 # `pnpm --filter web build`), so the warning names `yarn build`.
 _OPTION_VALUES = {
+    # npm's value-taking options on an install line: their value is no package (`npm install --prefix frontend`
+    # installs the frontend project bare, so its scripts run). npm accepts the value as the next word for each.
+    "npm": frozenset(
+        "--prefix -C --cache --omit --include --workspace -w --registry --tag --scope --location --before "
+        "--cpu --os --libc --userconfig --globalconfig --proxy --https-proxy --cafile --certfile --keyfile "
+        "--auth-type --audit-level --loglevel".split()
+    ),
     "yarn": frozenset(
         "--cwd --modules-folder --cache-folder --global-folder --link-folder --mutex --network-timeout "
         "--registry".split()
@@ -2467,6 +2474,13 @@ class _Install:
     sync_no_dev: bool = False  # `uv sync --no-dev`
 
 
+def _local_npm_spec(word: str) -> bool:
+    """A package argument that installs the project's own code rather than a registry package: a path
+    (`./tools/x`, `file:../lib`), a local tarball (`dist/app-1.0.0.tgz`, which npm resolves as a `file:` even
+    without a path character at the front) or a `file:` alias (`mylib@file:../lib`)."""
+    return word.startswith((".", "/", "~", "file:")) or word.endswith((".tgz", ".tar.gz")) or "@file:" in word
+
+
 def _project_script(base: str, texts: list[str], stdin: bool = False) -> str | None:
     """How this command runs the project's own code (`npm run`, `npx`, `cmake -P`), or None if it doesn't. Where an
     option's value may stand before the command word (`npm --prefix web run build`, `go -C app run .`), any word
@@ -2511,11 +2525,7 @@ def _project_script(base: str, texts: list[str], stdin: bool = False) -> str | N
         (word for word in words if word in _LIFECYCLE_COMMANDS["npm"]), None
     ) in ("install", "i", "add")
     packages = [word for word in words if word not in ("global", *_LIFECYCLE_COMMANDS.get(base, ()))]
-    if (
-        (global_install or npm_named_install)
-        and packages
-        and not any(word.startswith((".", "/", "~", "file:")) for word in packages)
-    ):
+    if (global_install or npm_named_install) and packages and not any(_local_npm_spec(word) for word in packages):
         scripts_off = True
     if base in _LIFECYCLE_COMMANDS and not scripts_off:
         if command := next((word for word in words if word in _LIFECYCLE_COMMANDS[base]), None):
