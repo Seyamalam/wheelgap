@@ -4942,6 +4942,12 @@ def test_dockerfile_requirements_warns_about_an_npm_install_into_a_prefix_with_a
     assert report.warnings == [] and list(report.passed_over) == ["programs"]
 
 
+def test_dockerfile_requirements_warns_about_an_npm_prefix_under_home(tmp_path):
+    # The shell expands `~` to a home folder wheelgap doesn't know, so a package.json there can't be ruled out.
+    _, report = _inputs(tmp_path, f"RUN npm install --prefix ~/app left-pad\n{_INSTALL}")
+    assert report.passed_over == {} and [line for line, _ in report.warnings] == [4]
+
+
 @pytest.mark.parametrize("run", ["npm install -g", "npm install -g ./tools/cli", "yarn global add file:./cli"])
 def test_dockerfile_requirements_warns_about_a_global_install_of_the_project(tmp_path, run):
     _, report = _inputs(tmp_path, f"{_INSTALL}RUN {run}\n")

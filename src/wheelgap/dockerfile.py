@@ -2512,7 +2512,8 @@ def _npm_install_folder(texts: list[str], cwd: str) -> tuple[str, bool] | None:
         elif text.startswith("--prefix=") or text.startswith("-C="):
             value = text.partition("=")[2]
         if value:
-            if not re.fullmatch(r"[A-Za-z0-9_./~-]+", value, re.ASCII):
+            # Not `~`: the shell expands it to a home folder wheelgap doesn't know.
+            if not re.fullmatch(r"[A-Za-z0-9_./-]+", value, re.ASCII):
                 return None
             folder, explicit = posixpath.normpath(posixpath.join(cwd, value)), True
     return folder, explicit
