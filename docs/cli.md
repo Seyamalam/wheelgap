@@ -86,10 +86,11 @@ stages before it, since it may name one of them: pass its value with [`--build-a
 
 ### `--dockerfile-inputs` {#dockerfile-inputs}
 
-`--dockerfile-inputs` (with `--dockerfile`, and no `INPUT`): check the requirements files the Dockerfile's final stage
-installs with `RUN pip install -r FILE`, on the image's Python and platform, so "will this image build without
-compiling anything?" is one command (add `--deps` for what they pull in). The file of a `pip install -r`
-line is read as a requirements file whatever its name (`requirements.pip`, `deps.py`, no extension), as pip reads it,
+`--dockerfile-inputs` (new in 0.14.0; with `--dockerfile`, and no `INPUT`): check the requirements files the
+Dockerfile's final stage installs with `RUN pip install -r FILE`, on the image's Python and platform, so "will this
+image build without compiling anything?" is one command (add `--deps` for what they pull in). The file of a `pip install
+-r` line is read as a requirements file whatever its name (`requirements.pip`, `deps.py`, no extension), as pip reads
+it,
 except that a `pylock.toml` or `pylock.NAME.toml` is read as a lock, as pip 26.1 and later install it (a `uv pip install -r` line still takes only a `.txt` or `.in` file, since uv reads other names its own
 way). `FILE` is followed back through `WORKDIR` and `COPY` to a file in the build context, taken to be the
 Dockerfile's folder unless
@@ -100,9 +101,9 @@ Dockerfile's folder unless
 that folder too. Without this flag, `--dockerfile` reads only the image.
 
 **What the answer is.** The Python packages the final image gets from the `pip install`, `uv pip install` and
-`uv sync` lines wheelgap can read. It is not "everything in the image": system packages, what the base image ships and anything a
-script installs are outside it. 0.13.0 refuses a Dockerfile at the first `RUN` that isn't an install or a system
-package command; from 0.14.0 on, every line of the final stage falls into one of three groups, and the answer says
+(**after 0.14.0**) `uv sync` lines wheelgap can read. It is not "everything in the image": system packages, what the
+base image ships and anything a script installs are outside it. Every line of the final stage falls into one of
+three groups, and the answer says
 which lines it did not look at.
 
 | | Lines | What wheelgap does |
@@ -136,7 +137,7 @@ last install it reads, such a line can still add packages, but can't change the 
 answer is given with the warning. A heredoc's body isn't split into commands: one that names an installer stops
 wherever it is, and any other is a line wheelgap can't see into.
 
-**Multi-stage builds** (0.13.0 reads only a final stage built `FROM` an image). The final image
+**Multi-stage builds.** The final image
 is the final stage on top of the stage it is built `FROM`, and so on back to an image, so wheelgap reads that chain
 of stages in order, as one: an install in `FROM python:3.13 AS base` counts when the last stage is `FROM base`, and
 the parent's `WORKDIR`, copied files, `ENV`, `SHELL` and anything that stops (an `ENV PIP_INDEX_URL`, a
@@ -167,7 +168,7 @@ know: a program that runs the project's own code before an install (`npm ci && n
 stop, so the answer is given though that code may change what the install fetches; and a command that changes a requirements file without naming it, its folder or a matching glob (through
 a variable, say) isn't noticed.
 
-Flags read on the `pip install` line (0.13.0 reads only `--no-cache-dir`): `--no-cache-dir`, `--upgrade` /
+Flags read on the `pip install` line: `--no-cache-dir`, `--upgrade` /
 `-U`, `--disable-pip-version-check`, `--root-user-action ignore` or `=ignore` (or `warn`), `--no-input`, `-q` /
 `--quiet`, `--no-compile`, `--compile`, `--progress-bar auto` / `on` / `off` / `raw` (or `=off`),
 `--no-warn-script-location`, `--no-color`, `--break-system-packages`, `--retries N`, `--timeout SECONDS` and
@@ -192,7 +193,7 @@ dependencies), and:
   `--user`, `--target`, `--ignore-installed`, `-e`, combined short flags such as `-Uq`, `--requirement=FILE`), or a
   value pip doesn't take (`--progress-bar pretty`), is still an error.
 
-`ENV` and `ARG` settings (0.13.0 refuses any `ENV` or `ARG` with `PIP_` or `UV_` in it). These
+`ENV` and `ARG` settings. These
 don't change which files are picked, and are fine: `PIP_NO_CACHE_DIR`, `PIP_CACHE_DIR`,
 `PIP_DISABLE_PIP_VERSION_CHECK`, `PIP_ROOT_USER_ACTION`, `PIP_NO_INPUT`, `PIP_PROGRESS_BAR`, `PIP_NO_COLOR`,
 `PIP_DEFAULT_TIMEOUT`, `PIP_TIMEOUT`, `PIP_RETRIES`, `PIP_QUIET`, `PIP_VERBOSE`, `PIP_NO_WARN_SCRIPT_LOCATION`,
@@ -216,7 +217,7 @@ Every requirement is checked as a fresh install. pip keeps a package the image a
 requirement, so when a system package command installs Python packages (`apk add py3-yaml`,
 `apt-get install python3-numpy`), a note names them: the build may not fetch every package the answer checks.
 
-Requirements named on the install line (0.13.0 refuses them): `RUN pip install numpy==2.3.4`,
+Requirements named on the install line: `RUN pip install numpy==2.3.4`,
 `pip install "numpy<3" pandas`, `pip install uvicorn[standard]`, alone or beside `-r FILE`. They are checked the way
 requirements given on wheelgap's own command line are (`wheelgap numpy==2.3.4 pandas`): a pin is that version, and
 anything else is the newest release pip would pick today, with a note
@@ -247,7 +248,7 @@ matching name in it. Otherwise it stops, naming what may match; quote it (`'uvic
 whatever the folder holds. A path with brackets (`./pkg[dev]`, `-e ./pkg[dev]`) stops as a project folder or an
 editable install.
 
-A `-r` or `-c` inside `FILE` (and inside the file it names, and so on) is an error in 0.13.0. It is
+A `-r` or `-c` inside `FILE` (and inside the file it names, and so on) is
 followed when the included file is in the image where pip looks for it, and the same holds inside a constraints file
 named with `-c FILE` on the `RUN` line, where a `-r` adds requirements (their packages are checked) and a `-c` adds
 constraints, as pip reads them. pip reads an include beside the including file *in the image*, so wheelgap finds the
@@ -258,7 +259,7 @@ An include that no `COPY` puts there (pip would stop the build), one where a `CO
 `${VAR}`, an absolute path, an abbreviated option (`--req`), an include on a line with an editable, or a symlink
 anywhere in the chain is still an error naming the `RUN` line.
 
-`RUN uv pip install --system -r FILE` is read too (0.13.0 refuses it), with the
+`RUN uv pip install --system -r FILE` is read too, with the
 `COPY --from=ghcr.io/astral-sh/uv[:TAG] /uv /uvx DEST/` that puts uv in the image (`/uvx` is optional). `FILE` is
 found, and its includes are verified, as for pip. `--system` (or an earlier `ENV UV_SYSTEM_PYTHON=1`) is required,
 since without it uv installs into a virtual environment; `-c FILE` (or `--constraints FILE`), `--no-cache`,
@@ -300,7 +301,7 @@ a `uv.toml` or `[tool.uv]` table uv would read settings from, a `.python-version
 (copied or written by an earlier `RUN`) and `ENV UV_PROJECT_ENVIRONMENT`, which may each give the sync a Python or
 environment the check doesn't know, and a `pyproject.toml` `requires-python` the checked Python doesn't satisfy.
 
-A `.dockerignore` is read as BuildKit reads it (0.13.0 refuses any project that has one):
+A `.dockerignore` is read as BuildKit reads it:
 `<Dockerfile name>.dockerignore` beside the Dockerfile if there is one, otherwise `.dockerignore` at the root of the
 build context. A requirements or constraints file that the rules leave out of the context, or a file one of them
 includes with `-r` or `-c`, is an error naming its `COPY` line and the rule: the image doesn't have it, so the build
