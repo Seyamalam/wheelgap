@@ -395,11 +395,11 @@ and `linux-armv7l` it doesn't compare `platform_machine`, since a matching machi
 `check_lockfile()` refuses the same way.
 
 musl and glibc Linux record the same environment, but pip resolves a different set on each — pip on musl accepts
-`musllinux` wheels and not `manylinux` ones — so a `musl-*` target is refused unless a download in the report is a
-`musllinux` wheel, which only pip on musl accepts and which therefore proves the report was made there. With one,
-the glibc `linux-*` targets are refused instead. In practice: make the report in the Alpine (or other musl) image
-you deploy to, and its musl targets can be checked as long as the project installs a binary wheel; a pure-Python
-report can't be told apart from a glibc one, so musl stays refused for it.
+`musllinux` wheels and not `manylinux` ones. A wheel only one libc's pip accepts is proof the resolution isn't one
+the other's pip makes, so a report with a `manylinux` wheel in its downloads is refused on `musl-*` targets, one
+with a `musllinux` wheel on the glibc `linux-*` ones, and one with both (pip run with two `--platform` values) on
+the two families. A report without either is taken at face value on both, evidence or not: it may be pure Python,
+or an Alpine report that pinned an older sdist where glibc pip would have taken a newer manylinux-only release.
 
 ## Requirements files
 
