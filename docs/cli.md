@@ -86,8 +86,8 @@ stages before it, since it may name one of them: pass its value with [`--build-a
 
 ### `--dockerfile-inputs` {#dockerfile-inputs}
 
-`--dockerfile-inputs` (with `--dockerfile`, and no `INPUT`): check the requirements files the Dockerfile's final
-stage installs with `RUN pip install -r FILE`, on the image's Python and platform, so "will this image build without
+`--dockerfile-inputs` (new in 0.14.0; with `--dockerfile`, and no `INPUT`): check the requirements files the
+Dockerfile's final stage installs with `RUN pip install -r FILE`, on the image's Python and platform, so "will this image build without
 compiling anything?" is one command (add `--deps` for what they pull in).
 
 ```dockerfile
@@ -113,8 +113,7 @@ flag, `--dockerfile` reads only the image.
 
 **What the answer is.** The Python packages the final image gets from the `pip install` and `uv pip install` lines
 wheelgap can read. It is not "everything in the image": system packages, what the base image ships and anything a
-script installs are outside it. 0.13.0 refuses a Dockerfile at the first `RUN` that isn't an install or a system
-package command; from 0.14.0 on, every line of the final stage falls into one of three groups, and the answer says
+script installs are outside it. Every line of the final stage falls into one of three groups, and the answer says
 which lines it did not look at:
 
 | | What wheelgap does |
@@ -149,8 +148,7 @@ When no install line is left to read, that is an error too, and it names the lin
 | `python -m venv` | Makes the venv whose `pip` is then read |
 | `ENV`/`ARG` settings that don't change which files are picked | Passed over; the fine list is below |
 
-**`pip install` flags.** 0.13.0 reads only `-r FILE` and `--no-cache-dir`; everything else below arrived in
-0.14.0.
+**`pip install` flags.** Any other flag is refused (below).
 
 | Flag | Read |
 | --- | --- |
@@ -165,7 +163,7 @@ When no install line is left to read, that is an error too, and it names the lin
 | `--no-deps` | Taken; with `--deps` it is an error, since the line installs no dependencies |
 | `--prefer-binary` | Read only when every requirement the line installs is pinned with `==` (in `FILE`, in the files it includes, and in a `-r` inside a `-c` file; a requirement that a constraint pins with `==` counts) and `--deps` isn't used: otherwise pip may take an older release that has a wheel over a newer one that has none, while wheelgap checks the newest |
 
-**`uv pip install` flags.** 0.13.0 refuses a uv line. `--system` (or an earlier `ENV UV_SYSTEM_PYTHON=1` or
+**`uv pip install` flags.** `--system` (or an earlier `ENV UV_SYSTEM_PYTHON=1` or
 `=true`) is required: without it uv installs into a virtual environment. Any other flag is an error, pip's own among
 them (`--no-input`, `--disable-pip-version-check`, `--root-user-action`, `--prefer-binary`, `--no-compile`,
 `--progress-bar`, `--no-warn-script-location`, `--no-color`, `--retries`, `--timeout`).
@@ -176,7 +174,7 @@ them (`--no-input`, `--disable-pip-version-check`, `--root-user-action`, `--pref
 | `--no-cache`, `--no-cache-dir`, `--upgrade` / `-U`, `-q` / `--quiet`, `--compile-bytecode` (and its alias `--compile`), `--no-progress`, `--break-system-packages`, `--strict` (it only warns after the install), `--no-python-downloads`, `--no-deps` | Taken with no value |
 | `--link-mode clone` / `copy` / `hardlink` / `symlink` (or `=copy`) | uv's only values |
 
-**`ENV` and `ARG` settings.** 0.13.0 refuses any `ENV` or `ARG` with `PIP_` or `UV_` in it. These don't change
+**`ENV` and `ARG` settings.** These don't change
 which files are picked, and are fine: `PIP_NO_CACHE_DIR`, `PIP_CACHE_DIR`, `PIP_DISABLE_PIP_VERSION_CHECK`,
 `PIP_ROOT_USER_ACTION`, `PIP_NO_INPUT`, `PIP_PROGRESS_BAR`, `PIP_NO_COLOR`, `PIP_DEFAULT_TIMEOUT`, `PIP_TIMEOUT`,
 `PIP_RETRIES`, `PIP_QUIET`, `PIP_VERBOSE`, `PIP_NO_WARN_SCRIPT_LOCATION`, `PIP_NO_COMPILE`, `PIP_COMPILE`,
@@ -193,7 +191,7 @@ of) is an error for the install lines after it, naming the variable and never it
 note; pass the same `--build-arg` to wheelgap if your build does, and it is then an error like any other value. A
 value that only mentions `PIP_` no longer counts.
 
-**Includes: a `-r` or `-c` line inside `FILE`** (and inside the file it names, and so on). An error in 0.13.0.
+**Includes: a `-r` or `-c` line inside `FILE`** (and inside the file it names, and so on).
 It is followed when the included file is in the image where pip looks for it, and the same holds inside a
 constraints file named with `-c FILE` on the `RUN` line, where a `-r` adds requirements (their packages are
 checked) and a `-c` adds constraints, as pip reads them. pip reads an include beside the including file *in the
@@ -202,7 +200,7 @@ one beside the including file in the build context; the note on stderr then name
 (`Dockerfile:4: RUN pip install -r reads requirements.txt, base.txt, -c constraints.txt (which includes
 pins.txt)`).
 
-**`.dockerignore`**, read as BuildKit reads it (0.13.0 refuses any project that has one): `<Dockerfile
+**`.dockerignore`**, read as BuildKit reads it: `<Dockerfile
 name>.dockerignore` beside the Dockerfile if there is one, otherwise `.dockerignore` at the root of the build
 context. A requirements or constraints file that the rules leave out of the context, or a file one of them includes
 with `-r` or `-c`, is an error naming its `COPY` line and the rule: the image doesn't have it, so the build would
@@ -316,7 +314,7 @@ wheelgap reads, in an earlier `RUN` or earlier on the same one.
 | Under `uv pip install`, a `-r` inside a constraints file | pip installs what it names, uv only constrains with it | Move the `-r` to a requirements file |
 | Before a `uv pip install` line, a `COPY` that brings a `uv.toml` with settings or a `pyproject.toml` with a `[tool.uv]` table, anywhere in what it copies — **after 0.14.0** (0.14.0 refuses any copied `pyproject.toml`) — or an earlier `RUN` command wheelgap can't see into that names a `pyproject.toml` (**after 0.14.0**), as one that names a `uv.toml` is | The image's `uv pip install` would read settings from them. A plain `pyproject.toml` — `COPY . .` brings one for nearly every project — is fine, as is a `uv.toml` that sets nothing; a file that isn't valid TOML or isn't UTF-8, or that is a symlink inside a copied folder, is refused, naming its path in the build context | Copy the requirements file alone and run `uv pip install` before the `COPY` that brings it |
 
-**Multi-stage builds** (0.13.0 reads only a final stage built `FROM` an image). The final image
+**Multi-stage builds.** The final image
 is the final stage on top of the stage it is built `FROM`, and so on back to an image, so wheelgap reads that chain
 of stages in order, as one: an install in `FROM python:3.13 AS base` counts when the last stage is `FROM base`, and
 the parent's `WORKDIR`, copied files, `ENV`, `SHELL` and anything that stops (an `ENV PIP_INDEX_URL`, a
