@@ -642,7 +642,7 @@ lines may then be another step's. Check `NAME==VERSION` directly then. Install c
 in a build's output (indented 6 or more spaces), don't count. Docker BuildKit's output works too: its `#12 28.56 ` prefix
 (`--progress=plain`) and the `28.56 ` prefix of the failed step's excerpt are skipped, as GitHub Actions timestamps
 are. A failure of the pip that installs a package's build or backend dependencies (`× pip subprocess to install build
-dependencies did not run successfully`, or `backend dependencies`) is the package's own failure: its build never ran, so the answer is the
+dependencies did not run successfully`, or `backend dependencies`; `× installing build dependencies for NAME` since pip 25.3) is the package's own failure: its build never ran, so the answer is the
 sdist's, whatever failed inside the subprocess (whose quoted output — the inner pip's lines, indented further —
 isn't this run's).
 
