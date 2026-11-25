@@ -2836,7 +2836,9 @@ def test_dockerfile_inputs_uv_sync_reads_dockerignore_from_the_context_root(tmp_
         assert dockerfile_requirements(path, uv_syncs=uv_syncs, pythons=("3.13",)) == [(4, tmp_path / "app/uv.lock")]
 
 
-@pytest.mark.parametrize("selector", [["--no-dev"], ["--extra", "cli"], ["--group", "dev"], ["--only-group", "dev"]])
+@pytest.mark.parametrize(
+    "selector", [["--no-dev"], ["--extra", "cli"], ["--all-extras"], ["--group", "dev"], ["--only-group", "dev"]]
+)
 def test_cli_dockerfile_inputs_uv_sync_refuses_wheelgaps_own_selectors(tmp_path, capsys, fake_pypi, fixtures, selector):
     """The sync line picks what the image installs: wheelgap's selectors would check another set, so they are an
     error, as they are for a Dockerfile's -r file."""
@@ -2853,10 +2855,12 @@ def test_cli_dockerfile_inputs_uv_sync_refuses_wheelgaps_own_selectors(tmp_path,
 
 
 def test_cli_dockerfile_inputs_uv_sync_ignores_configured_groups(tmp_path, capsys, fake_pypi, fixtures):
-    """[tool.wheelgap] groups don't change a sync lock's selection: `uv sync --locked --no-dev` leaves dev out."""
+    """[tool.wheelgap] groups and extras don't change a sync lock's selection: `uv sync --locked --no-dev` leaves
+    dev out, and the lock's unknown `api` extra is never selected, which would be an error if it were."""
     (tmp_path / "uv.lock").write_bytes((fixtures / "uvproj/uv.lock").read_bytes())
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n\n[tool.wheelgap]\ngroups = ["dev"]\n', encoding="utf-8"
+        '[project]\nname = "demo"\nversion = "0.1.0"\n\n[tool.wheelgap]\ngroups = ["dev"]\nextras = ["api"]\n',
+        encoding="utf-8",
     )
     path = _context(
         tmp_path,
