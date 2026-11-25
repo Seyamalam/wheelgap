@@ -63,8 +63,8 @@ pyyaml 6.0.2 on linux-x86_64: ● source
 ```
 
 `--suggest` names the fix: **6.0.3** has CPython 3.14 wheels on all three targets, so `upgrade to 6.0.3` closes every
-PyYAML row. The build is pure Cython and usually succeeds where a compiler exists, but it makes every install slower
-and compiler-dependent.
+PyYAML row. Its C extension is optional: without a compiler or libyaml's headers the build falls back to pure Python,
+so the install usually still works, but it runs a build first and can end up without the faster libyaml-based loader.
 
 ### pywin32 310: missing on win-amd64
 
