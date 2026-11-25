@@ -66,6 +66,7 @@ from .targets import (
     DEFAULT_MACOS,
     DEFAULT_MUSL,
     Target,
+    TargetError,
     next_python_note,
 )
 
@@ -660,6 +661,9 @@ def _main(argv: list[str] | None, prog: str) -> int:
                 read = []
                 for path in (args.old, args.new):
                     ref = git_ref_input(path)
+                    if ref is None and not os.path.exists(path):
+                        # As the main command says it: the argument as typed, not Python's FileNotFoundError.
+                        raise SourceError(f"{path}: no such file")
                     read.append((read_git_ref(*ref, Path(tmp)) if ref is not None else path, ref))
                 for (path, _), label in zip(read, (args.old, args.new), strict=True):
                     _input_index_url(path, label)  # before any lookup, for either side
@@ -677,7 +681,9 @@ def _main(argv: list[str] | None, prog: str) -> int:
                     sides.append(packages)
                     sources.append(source)
     except Exception as e:  # unknown targets, unreadable or malformed lockfiles, a REF:PATH git can't read
-        print(f"wheelgap: error: {type(e).__name__}: {e}", file=sys.stderr)
+        # The main command prints these two without the exception's name, and their text is written for people.
+        prefix = "" if isinstance(e, (SourceError, TargetError)) else f"{type(e).__name__}: "
+        print(f"wheelgap: error: {prefix}{e}", file=sys.stderr)
         if args.json:  # as the main command does, so scripts needn't parse stderr
             print(json.dumps({"error": {"message": str(e), "type": type(e).__name__}}))
         return 2
