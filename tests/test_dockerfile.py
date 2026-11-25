@@ -4913,6 +4913,25 @@ def test_dockerfile_requirements_warns_about_a_local_npm_install_with_a_package_
         dockerfile_requirements(path, constraints={}, dependencies=True)
 
 
+def test_dockerfile_requirements_warns_about_an_npm_install_below_a_package_json(tmp_path):
+    # npm's project is the nearest folder up the tree with a package.json: one copied into /app counts for an
+    # install run in /app/scripts, which has none itself.
+    dockerfile_text = (
+        "FROM python:3.13\nCOPY . /app\nWORKDIR /app/scripts\nRUN npm install left-pad\n"
+        "RUN pip install -r /app/requirements.txt\n"
+    )
+    path = _context(tmp_path / "walkup", dockerfile_text, ("requirements.txt", "package.json"))
+    report = InputsReport()
+    dockerfile_requirements(path, report=report, uv_installs=set(), constraints={})
+    assert [line for line, _ in report.warnings] == [4]
+    # An explicit --prefix is taken as given: only that folder counts, not the folders above it.
+    dockerfile_text = dockerfile_text.replace("npm install left-pad", "npm install --prefix scripts left-pad")
+    path = _context(tmp_path / "prefix", dockerfile_text, ("requirements.txt", "package.json"))
+    report = InputsReport()
+    dockerfile_requirements(path, report=report, uv_installs=set(), constraints={})
+    assert report.warnings == [] and list(report.passed_over) == ["programs"]
+
+
 def test_dockerfile_requirements_warns_about_an_npm_install_into_a_prefix_with_a_package_json(tmp_path):
     # --prefix picks npm's working folder: a package.json copied there is what counts, not one in the RUN's.
     body = "COPY frontend frontend\nRUN npm install --prefix frontend left-pad\n" + _INSTALL

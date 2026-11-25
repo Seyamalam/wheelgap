@@ -255,9 +255,9 @@ A `RUN` command that can't install Python packages with pip or uv:
   package managers with their scripts turned off (`npm ci --ignore-scripts`, `yarn install --mode=skip-build`),
   installing named packages globally (`npm install -g pnpm@9`, `yarn global add serve`) or, for npm, locally too
   (`npm install left-pad` — npm runs the root package.json's scripts only when no package is named — but only
-  while no earlier COPY or ADD can have put a package.json in its working folder), which runs their scripts and
-  not the project's, or only asked for their version or settings, as long as their arguments don't name an
-  installer;
+  while no earlier COPY or ADD can have put a package.json in its working folder or, without an explicit
+  `--prefix`, a folder above it), which runs their scripts and not the project's, or only asked for their version
+  or settings, as long as their arguments don't name an installer;
 - `python -m venv`, `pip --version`/`list`/`check`, `RUN --mount=type=cache` or `tmpfs` over a folder that holds
   neither the requirements file nor a pip config file, `--network`, `--security`;
 - `pip install` (with no pin or upper bound on `pip`) of only `pip`, `setuptools` and `wheel`;
@@ -284,7 +284,8 @@ copy changes the dependency set):
   `run`/`exec`/`dlx`, `deno run`/`task`) or a lifecycle one such as `postinstall` (`npm
   ci`/`pack`/`version`/`rebuild`, an `npm install` with no package named or with a path, tarball or `file:`
   alias, a local `npm install` of named packages once a COPY or ADD may have put a package.json in its working
-  folder (its workspaces and `file:` dependencies are the project's own code), a bare `yarn`,
+  folder or one above it (npm's project is the nearest such folder, and its workspaces and `file:` dependencies
+  are the project's own code), a bare `yarn`,
   `yarn`/`pnpm`/`bun install`, unless `--ignore-scripts` or yarn's `--mode=skip-build`),
   `npx`, a build file (`cargo build`/`check`/`install`/`run`/`test`, which run build.rs, `cmake` other than `-E`
   and `--version`, `ninja`, `mvn`, `gradle`, `dotnet`, `bundle`, `composer`) or a

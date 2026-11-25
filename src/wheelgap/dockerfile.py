@@ -12,7 +12,7 @@ import shlex
 import sys
 import tomllib
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NoReturn
@@ -2490,10 +2490,21 @@ class _Install:
     sync_no_dev: bool = False  # `uv sync --no-dev`
 
 
-def _npm_install_folder(texts: list[str], cwd: str) -> str | None:
-    """The folder npm runs an install in: `--prefix`/`-C`'s value resolved against the RUN's folder, else that
-    folder. None when the value isn't a literal path npm would read: a package.json can't be ruled out then."""
-    folder = cwd
+def _up_the_tree(folder: str) -> Iterable[str]:
+    """`folder` and each folder above it, to the root."""
+    while True:
+        yield folder
+        if folder == "/":
+            return
+        folder = posixpath.dirname(folder)
+
+
+def _npm_install_folder(texts: list[str], cwd: str) -> tuple[str, bool] | None:
+    """(The folder npm runs an install in, whether an explicit `--prefix`/`-C` chose it): the option's value
+    resolved against the RUN's folder, else that folder. npm takes an explicit prefix as given, but without one it
+    uses the nearest folder up the tree with a package.json as the project. None when the value isn't a literal
+    path npm would read: a package.json can't be ruled out then."""
+    folder, explicit = cwd, False
     for index, text in enumerate(texts):
         value = None
         if text in ("--prefix", "-C") and index + 1 < len(texts):
@@ -2503,8 +2514,8 @@ def _npm_install_folder(texts: list[str], cwd: str) -> str | None:
         if value:
             if not re.fullmatch(r"[A-Za-z0-9_./~-]+", value, re.ASCII):
                 return None
-            folder = posixpath.normpath(posixpath.join(cwd, value))
-    return folder
+            folder, explicit = posixpath.normpath(posixpath.join(cwd, value)), True
+    return folder, explicit
 
 
 def _local_npm_spec(word: str) -> bool:
@@ -3206,9 +3217,12 @@ class _RunReader:
             return "shell", ""
         texts = [word.text for word in args]
         empty = False
-        if base in ("npm", "corepack") and cwd is not None:
-            folder = _npm_install_folder(texts, cwd)
-            empty = folder is not None and not _may_carry_package_json(self.copies, self.dirs, folder)
+        if base in ("npm", "corepack") and cwd is not None and (resolved := _npm_install_folder(texts, cwd)):
+            folder, explicit = resolved
+            # Without an explicit prefix npm's project is the nearest folder up the tree with a package.json, so
+            # one in any folder above the working folder is the project's own code too.
+            folders = [folder] if explicit else list(_up_the_tree(folder))
+            empty = not any(_may_carry_package_json(self.copies, self.dirs, each) for each in folders)
         if spelling := _project_script(base, texts, stdin, empty):
             return "project-scripts", (spelling, shown)
         if base in _PROGRAMS:
