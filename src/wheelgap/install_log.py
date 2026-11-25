@@ -64,12 +64,12 @@ _INSTALL_VALUE_OPTIONS = frozenset(
 # file:///...` (`pip install -e .`).
 _LOCAL = re.compile(r" {0,2}(?:Processing|Obtaining) (\S+)")
 # pip's error when a package's sdist fails before `Building wheel for`: getting its build requirements, or its
-# metadata, or installing its build dependencies (`pip subprocess to install build dependencies`): the sdist's own
+# metadata, or installing its build or backend dependencies (`pip subprocess to install build dependencies`): its own
 # build never ran, so the failure is the package's, whatever failed inside the subprocess. pip prints it twice
 # (indented, then at column 0) and names no package: it's the one collected last.
 _PREPARE_FAILED = re.compile(
     r" {0,2}(?:(?:× ?)?(?:Getting requirements to build (?:wheel|editable)|Preparing (?:editable )?metadata "
-    r"\([^)]*\)|pip subprocess to install build dependencies) did not run successfully\.?|error: "
+    r"\([^)]*\)|pip subprocess to install (?:build|backend) dependencies) did not run successfully\.?|error: "
     r"metadata-generation-failed|(?:× ?)?Encountered error while generating package metadata\.?)\s*"
 )
 # The end of a pip run that installed what it was asked to; the next run in the same log starts afresh.
@@ -197,8 +197,9 @@ def failed_builds(text: str, other_index: bool = False) -> list[tuple[str, str |
     build-backend note names, if an earlier `Installing`/`Updating`/`Downgrading` line names it too; and for PDM
     (`pdm install -v` only), the one its `✖ Install NAME VERSION failed` line names, with a `BuildError` traceback for
     that package and the build link that says which index the sdist came from. pip's `Getting requirements to build
-    wheel` and `Preparing metadata` failures name no package: it's the sdist of the last column-0 `Collecting` line,
-    downloaded since. When pip's lines name no version, an exact pin on a `pip install` line in the log gives it, and
+    wheel`, `Preparing metadata` and build-dependencies subprocess failures name no package: it's the sdist of the
+    last column-0 `Collecting` line, downloaded since. When pip's lines name no version, an exact pin on a
+    `pip install` line in the log gives it, and
     with none the version is None (the caller checks the latest release, and says so), unless the log has pip's
     `Processing`/`Obtaining` line for a local project. A failure whose version the log doesn't make clear is an error,
     and so is a log that used another index than PyPI or --find-links (pip), or that built the package from another

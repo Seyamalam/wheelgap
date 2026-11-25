@@ -358,6 +358,8 @@ PREPARE_FAILED = [
     "error: metadata-generation-failed",
     "× Encountered error while generating package metadata.",
     "  × pip subprocess to install build dependencies did not run successfully.",
+    "× pip subprocess to install build dependencies did not run successfully.",
+    "  × pip subprocess to install backend dependencies did not run successfully.",
 ]
 
 
@@ -389,7 +391,9 @@ def test_a_build_dependencies_subprocess_failure_is_the_sdist_collected_last():
         "      ERROR: Failed to build installable wheels for some pyproject.toml based projects (numpy)\n"
         "      [end of output]\n\n"
         "  note: This error originates from a subprocess, and is likely not a problem with pip.\n"
-        "ERROR: pip subprocess to install build dependencies did not run successfully.\n"
+        "error: subprocess-exited-with-error\n\n"
+        "\u00d7 pip subprocess to install build dependencies did not run successfully.\n"
+        "\u2502 exit code: 1\n\u2570\u2500> See above for output.\n"
     )
     assert failed_builds(text) == [("pandas", "1.5.3")]
 
@@ -406,9 +410,10 @@ def test_a_build_dependencies_subprocess_failure_is_the_sdist_collected_last():
         "",
     ],
 )
-def test_a_failure_before_building_without_its_sdist_is_refused(before):
+@pytest.mark.parametrize("error", [PREPARE_FAILED[0], PREPARE_FAILED[-1]])
+def test_a_failure_before_building_without_its_sdist_is_refused(before, error):
     with pytest.raises(SourceError, match="doesn't name its sdist after the last `Collecting` line"):
-        failed_builds(before + "  Getting requirements to build wheel ... error\n" + PREPARE_FAILED[0] + "\n")
+        failed_builds(before + "  Getting requirements to build wheel ... error\n" + error + "\n")
 
 
 def test_a_failure_before_building_in_a_build_dependencys_pip_is_not_this_runs():
