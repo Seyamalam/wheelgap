@@ -2550,7 +2550,7 @@ _UV_SYNC = "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nRUN 
 def test_dockerfile_inputs_uv_sync_reads_the_copied_lock(tmp_path, run, no_dev):
     found, uv_syncs = _sync_inputs(tmp_path, _UV_SYNC.format(run))
     assert found == [(4, tmp_path / "uv.lock")]
-    assert uv_syncs == {(4, tmp_path / "uv.lock"): (no_dev, tmp_path / "pyproject.toml")}
+    assert uv_syncs == {(4, tmp_path / "uv.lock"): (no_dev, tmp_path / "pyproject.toml", None, None)}
 
 
 @pytest.mark.parametrize(
@@ -2583,7 +2583,7 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
     found = dockerfile_requirements(path, uv_syncs=uv_syncs)
     line = copy.count("\n") + 4
     assert found == [(line, tmp_path / lock)]
-    assert uv_syncs == {(line, tmp_path / lock): (False, tmp_path / pyproject)}
+    assert uv_syncs == {(line, tmp_path / lock): (False, tmp_path / pyproject, None, None)}
 
 
 @pytest.mark.parametrize(
@@ -2651,26 +2651,20 @@ def test_dockerfile_inputs_refuses_sync_flags_that_change_the_answer(tmp_path, r
             "RUN uv sync --locked\n",
             ":4: this COPY brings cfg/uv.toml, which uv reads for uv sync.*run it without the uv settings",
         ),
-        (
-            "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nCOPY .python-version ./\n"
-            "RUN uv sync --locked\n",
-            ":4: a .python-version or .python-versions in the project's folder .* may make `uv sync` on line 5 use "
-            "another Python",
-        ),
-        # uv 0.13.9 reads a .python-versions file too, and the global pin in its user config folder.
+        # uv 0.13.9 reads a .python-versions file too (its first version), and the global pin in its config folder.
         (
             "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nCOPY pins/.python-versions ./\n"
             "RUN uv sync --locked\n",
-            ":4: a .python-version or .python-versions .* may make `uv sync` on line 5 use another Python",
+            ":4: a .python-versions in the project's folder .* may make `uv sync` on line 5 use another Python",
         ),
         (
             "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nCOPY pins/ ./\nRUN uv sync --locked\n",
-            ":4: a .python-version or .python-versions .* may make `uv sync` on line 5 use another Python",
+            ":4: a .python-versions in the project's folder .* may make `uv sync` on line 5 use another Python",
         ),
         (
             "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nCOPY .python-version /root/.config/uv/\n"
             "RUN uv sync --locked\n",
-            ":4: a .python-version or .python-versions .* may make `uv sync` on line 5 use another Python",
+            ":4: a .python-version in uv's config folder may make `uv sync` on line 5 use another Python",
         ),
         (
             "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nRUN echo 3.12 > .python-versions\n"
@@ -2708,11 +2702,6 @@ def test_dockerfile_inputs_refuses_sync_flags_that_change_the_answer(tmp_path, r
             "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\n"
             "RUN . ./download-lock.sh\nRUN uv sync --locked\n",
             ":4: this line.*wheelgap can't see into it",
-        ),
-        # A whole-context COPY brings the .python-version sitting beside the project too.
-        (
-            "FROM python:3.13\nWORKDIR /app\nCOPY . ./\nRUN uv sync --locked\n",
-            ":3: a .python-version or .python-versions in the project's folder .* may make `uv sync` on line 4",
         ),
         # The lock pip installs as requirements isn't the lock uv sync installs, either way round.
         (
@@ -2762,7 +2751,7 @@ def test_dockerfile_inputs_uv_sync_and_pip_install_on_one_line(tmp_path):
         ),
     )
     assert found == [(4, tmp_path / "requirements.txt"), (4, tmp_path / "uv.lock")]
-    assert uv_syncs == {(4, tmp_path / "uv.lock"): (False, tmp_path / "pyproject.toml")}
+    assert uv_syncs == {(4, tmp_path / "uv.lock"): (False, tmp_path / "pyproject.toml", None, None)}
 
 
 @pytest.mark.parametrize("flag", ["--locked", "--frozen"])
@@ -2906,16 +2895,16 @@ def test_dockerfile_inputs_uv_sync_refuses_a_uv_toml_the_image_doesnt_get(tmp_pa
 
 
 @pytest.mark.parametrize(
-    ("ignore", "refused"),
+    ("ignore", "pin"),
     [
         # .dockerignore patterns match from the build context's root: `.python-version` leaves out only the root's,
-        # so app/.python-version is copied into /app, where uv sync reads it.
-        (".python-version\n", True),
-        ("app/.python-version\n", False),
-        ("**/.python-version\n", False),
+        # so app/.python-version is copied into /app, where uv sync reads its pin.
+        (".python-version\n", "3.12"),
+        ("app/.python-version\n", None),
+        ("**/.python-version\n", None),
     ],
 )
-def test_dockerfile_inputs_uv_sync_reads_dockerignore_from_the_context_root(tmp_path, ignore, refused):
+def test_dockerfile_inputs_uv_sync_reads_dockerignore_from_the_context_root(tmp_path, ignore, pin):
     (tmp_path / "app").mkdir()
     (tmp_path / "app/uv.lock").write_text("version = 1\n", encoding="utf-8")
     (tmp_path / "app/pyproject.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
@@ -2923,11 +2912,168 @@ def test_dockerfile_inputs_uv_sync_reads_dockerignore_from_the_context_root(tmp_
     (tmp_path / ".dockerignore").write_text(ignore, encoding="utf-8")
     path = _context(tmp_path, "FROM python:3.13\nWORKDIR /app\nCOPY app/ /app/\nRUN uv sync --locked\n", files=())
     uv_syncs: dict = {}
-    if refused:
-        with pytest.raises(DockerfileError, match=":3: a .python-version or .python-versions in the project's"):
-            dockerfile_requirements(path, uv_syncs=uv_syncs, pythons=("3.13",))
+    found = dockerfile_requirements(path, uv_syncs=uv_syncs, pythons=("3.13",))
+    assert found == [(4, tmp_path / "app/uv.lock")]
+    pin_file = tmp_path / "app/.python-version" if pin else None
+    assert uv_syncs == {(4, tmp_path / "app/uv.lock"): (False, tmp_path / "app/pyproject.toml", pin, pin_file)}
+
+
+@pytest.mark.parametrize("version", ["3.12", "3.12.4", "3.14t", "3.9"])
+def test_dockerfile_inputs_uv_sync_reads_a_python_version(tmp_path, version):
+    """A .python-version a COPY lands in the project's folder is read, and its pin collected for the check."""
+    path = _sync_context(
+        tmp_path,
+        "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nCOPY .python-version ./\n"
+        "RUN uv sync --locked\n",
+        pyproject='[project]\nname = "app"\n',
+    )
+    (tmp_path / ".python-version").write_text(f"{version}\n", encoding="utf-8")
+    uv_syncs: dict = {}
+    found = dockerfile_requirements(path, uv_syncs=uv_syncs)
+    assert found == [(5, tmp_path / "uv.lock")]
+    assert uv_syncs == {
+        (5, tmp_path / "uv.lock"): (False, tmp_path / "pyproject.toml", version, tmp_path / ".python-version")
+    }
+
+
+def test_dockerfile_inputs_uv_sync_reads_the_nearest_python_version(tmp_path):
+    """uv reads the .python-version nearest the sync's folder: /app's wins over the one at /."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app/uv.lock").write_text("purewheel==3.1\n", encoding="utf-8")
+    (tmp_path / "app/pyproject.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
+    (tmp_path / "app/.python-version").write_text("3.12\n", encoding="utf-8")
+    (tmp_path / ".python-version").write_text("3.11\n", encoding="utf-8")
+    path = _context(
+        tmp_path,
+        "FROM python:3.13\nWORKDIR /app\nCOPY app/ /app/\nCOPY .python-version /\nRUN uv sync --locked\n",
+        files=(),
+    )
+    uv_syncs: dict = {}
+    assert dockerfile_requirements(path, uv_syncs=uv_syncs) == [(5, tmp_path / "app/uv.lock")]
+    assert uv_syncs[(5, tmp_path / "app/uv.lock")][2:] == ("3.12", tmp_path / "app/.python-version")
+
+
+def test_dockerfile_inputs_uv_sync_reads_an_ancestor_python_version(tmp_path):
+    """With none in the project's folder, an ancestor's .python-version is the pin."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app/uv.lock").write_text("purewheel==3.1\n", encoding="utf-8")
+    (tmp_path / "app/pyproject.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
+    (tmp_path / ".python-version").write_text("3.11\n", encoding="utf-8")
+    path = _context(
+        tmp_path,
+        "FROM python:3.13\nWORKDIR /app\nCOPY app/ /app/\nCOPY .python-version /\nRUN uv sync --locked\n",
+        files=(),
+    )
+    uv_syncs: dict = {}
+    assert dockerfile_requirements(path, uv_syncs=uv_syncs) == [(5, tmp_path / "app/uv.lock")]
+    assert uv_syncs[(5, tmp_path / "app/uv.lock")][2:] == ("3.11", tmp_path / ".python-version")
+
+
+@pytest.mark.parametrize("version", ["pypy", "3", "cpython-3.12.4-20241016", "/usr/bin/python3.12", "3.12.4.5"])
+def test_dockerfile_inputs_uv_sync_refuses_a_pin_it_cant_check(tmp_path, version):
+    path = _sync_context(
+        tmp_path,
+        "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nCOPY .python-version ./\n"
+        "RUN uv sync --locked\n",
+        pyproject='[project]\nname = "app"\n',
+    )
+    (tmp_path / ".python-version").write_text(f"{version}\n", encoding="utf-8")
+    with pytest.raises(DockerfileError, match="pins .* isn't a CPython version"):
+        dockerfile_requirements(path, uv_syncs={})
+
+
+def test_dockerfile_inputs_uv_sync_requires_python_applies_to_the_pin(tmp_path):
+    """requires-python binds the pinned Python, not the image's: uv sync fails on a pin outside it."""
+    dockerfile = (
+        "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml .python-version ./\nRUN uv sync --locked\n"
+    )
+    with pytest.raises(DockerfileError, match="needs Python >=3.13 for `uv sync`, but the .python-version pins 3.12"):
+        _sync_inputs(tmp_path, dockerfile, pyproject='[project]\nrequires-python = ">=3.13"\n')
+
+
+def test_cli_dockerfile_inputs_uv_sync_checks_the_pinned_python(tmp_path, capsys, fake_pypi, fixtures):
+    """The sync's .python-version picks the Python its lock installs for: the answer is for it, not the image's."""
+    (tmp_path / "uv.lock").write_bytes((fixtures / "uvproj/uv.lock").read_bytes())
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\nrequires-python = ">=3.12"\n', encoding="utf-8"
+    )
+    (tmp_path / ".python-version").write_text("3.12\n", encoding="utf-8")
+    path = _context(
+        tmp_path,
+        "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml .python-version ./\nRUN uv sync --locked\n",
+        files=(),
+    )
+    main(["--dockerfile", str(path), "--dockerfile-inputs", "-t", "linux-x86_64", "--json"])
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert [target["python"] for target in out["targets"]] == ["3.12"]
+    assert "RUN uv sync reads" in captured.err and ".python-version" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("pin", "checked", "accepted"),
+    [
+        # -p stands in for the image, but the pin is what the sync installs: it must be among the checked Pythons.
+        ("3.12", ["-p", "3.12"], True),
+        ("3.12", ["-p", "3.12,3.13"], True),
+        ("3.12", ["-p", "3.13"], False),
+    ],
+)
+def test_cli_dockerfile_inputs_uv_sync_pin_must_be_checked(
+    tmp_path, capsys, fake_pypi, fixtures, pin, checked, accepted
+):
+    (tmp_path / "uv.lock").write_bytes((fixtures / "uvproj/uv.lock").read_bytes())
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8")
+    (tmp_path / ".python-version").write_text(f"{pin}\n", encoding="utf-8")
+    path = _context(
+        tmp_path,
+        "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml .python-version ./\nRUN uv sync --locked\n",
+        files=(),
+    )
+    argv = ["--dockerfile", str(path), "--dockerfile-inputs", "-t", "linux-x86_64", *checked]
+    if accepted:
+        main(argv)
+        assert "doesn't cover" not in capsys.readouterr().err
     else:
-        assert dockerfile_requirements(path, uv_syncs=uv_syncs, pythons=("3.13",)) == [(4, tmp_path / "app/uv.lock")]
+        assert main(argv) == 2
+        assert f"installs Python {pin} (its .python-version), which the check's Python (3.13) doesn't cover" in (
+            capsys.readouterr().err
+        )
+
+
+def test_cli_dockerfile_inputs_uv_sync_pin_cant_share_the_run(tmp_path, capsys, fake_pypi, fixtures):
+    """A pin that isn't the image's Python can't be checked beside an install that installs the image's."""
+    (tmp_path / "uv.lock").write_bytes((fixtures / "uvproj/uv.lock").read_bytes())
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8")
+    (tmp_path / ".python-version").write_text("3.12\n", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("purewheel==3.1\n", encoding="utf-8")
+    path = _context(
+        tmp_path,
+        "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml .python-version requirements.txt ./\n"
+        "RUN pip install -r requirements.txt && uv sync --locked\n",
+        files=(),
+    )
+    assert main(["--dockerfile", str(path), "--dockerfile-inputs", "-t", "linux-x86_64"]) == 2
+    assert (
+        "`uv sync` installs Python 3.12 (its .python-version), but the install on line 4 installs the image's 3.13"
+    ) in capsys.readouterr().err
+
+
+def test_cli_dockerfile_inputs_uv_sync_pin_patch_is_noted(tmp_path, capsys, fake_pypi, fixtures):
+    """A patch pin is checked at X.Y's newest patch, as an image's patch pin is."""
+    (tmp_path / "uv.lock").write_bytes((fixtures / "uvproj/uv.lock").read_bytes())
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8")
+    (tmp_path / ".python-version").write_text("3.12.4\n", encoding="utf-8")
+    path = _context(
+        tmp_path,
+        "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml .python-version ./\nRUN uv sync --locked\n",
+        files=(),
+    )
+    main(["--dockerfile", str(path), "--dockerfile-inputs", "-t", "linux-x86_64", "--json"])
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert [target["python"] for target in out["targets"]] == ["3.12"]
+    assert ".python-version pins Python 3.12.4; wheelgap checks 3.12 at its newest patch release" in captured.err
 
 
 @pytest.mark.parametrize(

@@ -302,13 +302,18 @@ an error naming the line, since it may change the installed set. Errors too, eac
 `pyproject.toml` no `COPY` brings (or any `COPY --from` before the line other than uv's own `/uv /uvx`, whose files
 wheelgap can't read), the two from different folders of the build context (the image's pair may not be one
 project), a cache or tmpfs mount over them, a `uv.toml` or `[tool.uv]` table uv would read settings from, a
-`.python-version` or `.python-versions` in the project's folder or a folder above it, or in uv's config folder
-(`~/.config/uv`, where `uv python pin --global` writes), a `.venv` in the project's folder (each copied or written by
-an earlier `RUN`), and `UV_PROJECT_ENVIRONMENT` (in an `ENV`, an `ARG` with a value, or on the `RUN`), which may each give the sync
-a Python or environment the check doesn't know, and a `pyproject.toml` `requires-python` the checked Python doesn't
-satisfy, and a `uv.toml` with settings beside the lock in the build context that the image doesn't get (not
-copied, or left out by `.dockerignore`), since the lock check would apply it. With none of these, uv 0.13.9 creates `.venv` from the image's own Python (it downloads one only when no
-Python it finds satisfies `requires-python`), so the image's Python and platform are the target.
+`.python-version` an earlier `RUN` writes or one in uv's config folder (`~/.config/uv`, where
+`uv python pin --global` writes), a `.python-versions` (uv 0.13.9 reads its first version), a `.venv` in the
+project's folder, and `UV_PROJECT_ENVIRONMENT` (in an `ENV`, an `ARG` with a value, or on the `RUN`), which may each
+give the sync a Python or environment the check doesn't know, and a `pyproject.toml` `requires-python` the sync's
+Python doesn't satisfy, and a `uv.toml` with settings beside the lock in the build context that the image doesn't
+get (not copied, or left out by `.dockerignore`), since the lock check would apply it. A `.python-version` a `COPY`
+puts in the project's folder or a folder above it is **read**, as uv reads the nearest one: its pin is the Python
+`uv sync` installs for, so that Python is checked — it must be among the `-p` Pythons when `-p` is given, and a pin
+that isn't the image's Python is an error when another install in the stage installs the image's (the answer can't
+split Pythons). A pin that isn't a CPython `X.Y`, `X.Y.Z` or `X.Yt` version is an error too. With none of these, uv
+0.13.9 creates `.venv` from the image's own Python (it downloads one only when no Python it finds satisfies
+`requires-python`), so the image's Python and platform are the target.
 
 A `.dockerignore` is read as BuildKit reads it:
 `<Dockerfile name>.dockerignore` beside the Dockerfile if there is one, otherwise `.dockerignore` at the root of the

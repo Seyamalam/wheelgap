@@ -1284,8 +1284,16 @@ def _read_copy(
     return _Copy(number, tuple(sources), target, into)
 
 
-def _copied_file(copy: _Copy, target: str, context: Path, ignore_rules: tuple[dockerignore.Rule, ...]) -> Path | None:
-    """The file in the build context `copy` puts at `target` in the image, or None if it puts none there."""
+def _copied_file(
+    copy: _Copy,
+    target: str,
+    context: Path,
+    ignore_rules: tuple[dockerignore.Rule, ...],
+    ignored_is_absent: bool = False,
+) -> Path | None:
+    """The file in the build context `copy` puts at `target` in the image, or None if it puts none there. With
+    `ignored_is_absent`, an ignore rule that leaves an entry out of a copied folder means no file lands, not an
+    error."""
     if any(target == posixpath.join(copy.dest, binary) for binary in copy.uv_binaries):
         raise DockerfileError(f"line {copy.line}: {target} is a uv binary from another image, not a requirements file")
     root = context.resolve()
@@ -1318,6 +1326,8 @@ def _copied_file(copy: _Copy, target: str, context: Path, ignore_rules: tuple[do
                     )
                 relative = found.relative_to(context).as_posix()
                 if rule := dockerignore.ignored(relative, ignore_rules):
+                    if ignored_is_absent:
+                        continue
                     raise DockerfileError(
                         f"line {copy.line}: COPY {rel}: {relative} is excluded from the build context by {rule}"
                     )
@@ -1638,12 +1648,17 @@ def _requirement_includes(host: Path, number: int) -> list[tuple[bool, str]]:
     return includes
 
 
-def _find_copied_file(
-    copies: list[_Copy], target: str, context: Path, number: int, ignore_rules: tuple[dockerignore.Rule, ...]
-) -> Path:
-    """The file in the build context that the COPY instructions in `copies` leave at `target` in the image: the last
-    one that puts a file there wins, as in the build. A file the ignore rules leave out of the build context is a
-    DockerfileError (`_copied_file`), so nothing the image doesn't have is returned."""
+def _copied_file_or_none(
+    copies: list[_Copy],
+    target: str,
+    context: Path,
+    number: int,
+    ignore_rules: tuple[dockerignore.Rule, ...],
+    *,
+    ignored_is_absent: bool = False,
+) -> Path | None:
+    """What `_find_copied_file` returns, or None when no COPY puts a file at `target`. With `ignored_is_absent`,
+    an ignore rule that leaves a file out of a copied folder means the image has no file there, not an error."""
     for copy in reversed(copies):
         if copy.error:
             raise DockerfileError(f"line {copy.line}: {copy.error}")
@@ -1652,8 +1667,19 @@ def _find_copied_file(
                 f"line {number}: {target} may come from the COPY --from={copy.foreign} on line {copy.line}, and "
                 "--dockerfile-inputs doesn't follow files copied from another stage or image"
             )
-        if (host := _copied_file(copy, target, context, ignore_rules)) is not None:
+        if (host := _copied_file(copy, target, context, ignore_rules, ignored_is_absent)) is not None:
             return host
+    return None
+
+
+def _find_copied_file(
+    copies: list[_Copy], target: str, context: Path, number: int, ignore_rules: tuple[dockerignore.Rule, ...]
+) -> Path:
+    """The file in the build context that the COPY instructions in `copies` leave at `target` in the image: the last
+    one that puts a file there wins, as in the build. A file the ignore rules leave out of the build context is a
+    DockerfileError (`_copied_file`), so nothing the image doesn't have is returned."""
+    if (host := _copied_file_or_none(copies, target, context, number, ignore_rules)) is not None:
+        return host
     raise DockerfileError(f"line {number}: {target} isn't copied from the build context by a COPY before this line")
 
 
@@ -3521,7 +3547,7 @@ def dockerfile_requirements(
     constraints: dict[Path, tuple[Path, ...]] | None = None,
     dependencies: bool = False,
     uv_installs: set[tuple[int, Path]] | None = None,
-    uv_syncs: dict[tuple[int, Path], tuple[bool, Path]] | None = None,
+    uv_syncs: dict[tuple[int, Path], tuple[bool, Path, str | None, Path | None]] | None = None,
     report: InputsReport | None = None,
     pythons: Sequence[str] | None = None,
     line_files: dict[Path, tuple[Path, ...]] | None = None,
@@ -3560,12 +3586,14 @@ def dockerfile_requirements(
     `RUN uv sync --locked` or `--frozen` (optionally `--no-dev` and the harmless global flags) is read too: the
     uv.lock and pyproject.toml it reads in its working folder are followed back to the build context like -r FILE
     is, the lock becomes the (line, file) pair the caller checks as `wheelgap uv.lock` does, and `uv_syncs`, which
-    must be given, collects each (line, lock) pair's (--no-dev, the pyproject.toml it was resolved with). The
-    project must sit in the folder the line runs in (uv searches ancestors too, which isn't read), the lock and
-    pyproject.toml must come from beside each other in the build context (the lock's selection is read from a
-    pyproject.toml beside it on disk), a second `uv sync` line, a copied uv.toml or [tool.uv] table, a copied
-    .python-version(s) or .venv the sync could use instead of the image's Python, a requires-python the checked
-    Pythons don't satisfy, and UV_PROJECT_ENVIRONMENT are all DockerfileError, naming the line.
+    must be given, collects each (line, lock) pair's (--no-dev, the pyproject.toml it was resolved with, the Python
+    its copied .python-version pins or None, that file or None). The project must sit in the folder the line runs in
+    (uv searches ancestors too, which isn't read), the lock and pyproject.toml must come from beside each other in
+    the build context (the lock's selection is read from a pyproject.toml beside it on disk), a second `uv sync` line, a
+    copied uv.toml or [tool.uv] table, a .python-version one an earlier RUN writes, a copied .python-versions, a
+    .python-version in uv's config folder, a copied .venv, a pin that isn't a CPython X.Y, X.Y.Z or X.Yt, a
+    requires-python the sync's Python doesn't satisfy, and UV_PROJECT_ENVIRONMENT are all DockerfileError, naming
+    the line.
     """
     try:
         text = path.read_bytes().decode("utf-8-sig")
@@ -3620,7 +3648,7 @@ def _dockerfile_requirements(
     constraints: dict[Path, tuple[Path, ...]] | None = None,
     dependencies: bool = False,
     uv_installs: set[tuple[int, Path]] | None = None,
-    uv_syncs: dict[tuple[int, Path], tuple[bool, Path]] | None = None,
+    uv_syncs: dict[tuple[int, Path], tuple[bool, Path, str | None, Path | None]] | None = None,
     report: InputsReport | None = None,
     pythons: tuple[str, ...] | None = None,
     line_files: dict[Path, tuple[Path, ...]] | None = None,
@@ -3896,10 +3924,11 @@ def _dockerfile_requirements(
                 "environment with a Python --dockerfile-inputs doesn't know"
             )
         # A .python-version, a .venv uv would reuse, or a config file changes which Python and packages the sync
-        # gets. One copied or created earlier is an error; one a plain `python -m venv` makes is not (reader.venvs
-        # knows its Python is the image's). uv 0.13.9 reads a .python-versions file as well (its first version), and
-        # the global pin `uv python pin --global` writes in its user config folder ($XDG_CONFIG_HOME/uv or
-        # ~/.config/uv), so any folder called uv counts too.
+        # gets. A copied .python-version in the project's folder or an ancestor is read and its pin checked as the
+        # sync's Python; one created earlier, a .python-versions (uv 0.13.9 reads its first version), the global pin
+        # `uv python pin --global` writes in its user config folder ($XDG_CONFIG_HOME/uv or ~/.config/uv — any
+        # folder called uv counts) and a copied .venv are errors, as they were. A .venv a plain `python -m venv`
+        # makes is not one (reader.venvs knows its Python is the image's).
         pins = (".python-version", ".python-versions")
 
         def pin_folder(folder: str) -> bool:
@@ -3916,11 +3945,20 @@ def _dockerfile_requirements(
                     f"line {line}: this line may put a {posixpath.basename(word)} where `uv sync` on line {number} "
                     "reads it, which may make uv use another Python than the one checked"
                 )
-        if copy_line := _copied_name(copies, pins, pin_folder, ignore_rules):
+        if copy_line := _copied_name(copies, (".python-versions",), pin_folder, ignore_rules):
             raise DockerfileError(
-                f"line {copy_line}: a .python-version or .python-versions in the project's folder (or uv's config "
-                f"folder) may make `uv sync` on line {number} use another Python than the one checked"
+                f"line {copy_line}: a .python-versions in the project's folder (or uv's config folder) may make "
+                f"`uv sync` on line {number} use another Python than the one checked"
             )
+        if copy_line := _copied_name(
+            copies, (".python-version",), lambda folder: posixpath.basename(folder) == "uv", ignore_rules
+        ):
+            raise DockerfileError(
+                f"line {copy_line}: a .python-version in uv's config folder may make `uv sync` on line {number} "
+                "use another Python than the one checked"
+            )
+        pin: str | None = None
+        pin_file: Path | None = None
         if copy_line := _copied_name(copies, (".venv",), lambda folder: folder == install.cwd, ignore_rules):
             raise DockerfileError(
                 f"line {copy_line}: a .venv in the project's folder may give `uv sync` on line {number} an "
@@ -3959,6 +3997,32 @@ def _dockerfile_requirements(
                 "but no COPY brings it beside the lock in the image, so `uv sync` there doesn't read it, and "
                 "wheelgap's lock check would apply its settings"
             )
+        # uv reads the nearest .python-version at the folder the sync runs in or an ancestor, resolved like the
+        # lock; an ignore rule that leaves one out of a copied folder means the image has none there.
+        folder: str | None = install.cwd
+        while pin_file is None and folder is not None:
+            target = posixpath.normpath(posixpath.join(folder, ".python-version"))
+            if mount := next((m for m in install.mounts if (target + "/").startswith(m.rstrip("/") + "/")), None):
+                raise DockerfileError(
+                    f"line {number}: a cache or tmpfs mount over {mount} covers {target} while this RUN runs, so "
+                    "the install may read another file than the one COPY put there"
+                )
+            if (
+                host := _copied_file_or_none(copies, target, context, number, ignore_rules, ignored_is_absent=True)
+            ) is not None:
+                pin_file = host
+            folder = None if folder == "/" else posixpath.dirname(folder)
+        if pin_file is not None:
+            try:
+                written = pin_file.read_bytes().decode("utf-8-sig").splitlines()[0].strip()
+            except (OSError, UnicodeDecodeError, IndexError) as exc:
+                raise DockerfileError(f"line {number}: {pin_file.name} can't be read for its pin: {exc}") from exc
+            if re.fullmatch(r"\d+\.\d+(\.\d+)?t?", written) is None:
+                raise DockerfileError(
+                    f"line {number}: {pin_file.relative_to(context).as_posix()} pins {written!r}, which isn't a "
+                    "CPython version (X.Y, X.Y.Z or X.Yt) --dockerfile-inputs can check"
+                )
+            pin = written
         try:
             project_table = tomllib.loads(pyproject.read_bytes().decode("utf-8-sig")).get("project")
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
@@ -3973,13 +4037,19 @@ def _dockerfile_requirements(
                 raise DockerfileError(
                     f"line {number}: pyproject.toml's requires-python ({requires}) isn't a valid specifier"
                 )
-            if not pythons:
+            sync_pythons = [pin] if pin is not None else list(pythons or ())
+            if not sync_pythons:
                 raise DockerfileError(
                     f"line {number}: pyproject.toml needs Python {requires} for `uv sync`, but which Python the "
                     "check is for isn't known"
                 )
-            for python in pythons:
+            for python in sync_pythons:
                 if Version(python.removesuffix("t")) not in specifier:
+                    if pin is not None:
+                        raise DockerfileError(
+                            f"line {number}: pyproject.toml needs Python {requires} for `uv sync`, but the "
+                            f".python-version pins {python}"
+                        )
                     raise DockerfileError(
                         f"line {number}: pyproject.toml needs Python {requires} for `uv sync`, and uv would use "
                         f"another Python than the {python} checked"
@@ -3989,7 +4059,7 @@ def _dockerfile_requirements(
         used_line_files[uv_lock] = ()
         if includes is not None:
             includes[number, uv_lock] = ()
-        uv_syncs[number, uv_lock] = (install.sync_no_dev, pyproject)
+        uv_syncs[number, uv_lock] = (install.sync_no_dev, pyproject, pin, pin_file)
         found.setdefault(uv_lock, number)
         sync_line = number
         # An unread COPY or ADD before the one that copies FILE may still put a pip config file in the image.
