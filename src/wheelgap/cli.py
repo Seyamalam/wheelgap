@@ -58,7 +58,7 @@ from .dockerfile import (
     read_dockerfile,
 )
 from .github import github_annotations, relative_path, workflow_command
-from .install_log import failed_builds, log_source, read_log
+from .install_log import LATEST_NOTE, failed_builds, log_source, read_log
 from .junit import write_junit
 from .logsafe import guarded_output, write_command
 from .offline import require_offline, undo_offline
@@ -1044,6 +1044,7 @@ def report_json(
     dockerfile_packages: list[dict[str, object]] | None = None,
     directory_inputs: list[dict[str, object]] | None = None,
     image_unread: bool = False,
+    from_log_notes: list[dict[str, str]] | None = None,
 ) -> str:
     multi_py = len({t.python for t in targets}) > 1
     gaps = [r for r in rows if not r.ok]
@@ -1171,6 +1172,8 @@ def report_json(
         report["dockerfile_warnings"] = dockerfile_warnings
     if directory_inputs:  # an input was a directory: the file read from each, and why
         report["directory_inputs"] = directory_inputs
+    if from_log_notes is not None:  # --from-log: a failed package checked at a version the log doesn't name
+        report["from_log_notes"] = from_log_notes
     return json.dumps(report, indent=2)
 
 
@@ -2597,7 +2600,10 @@ def _main(argv: list[str], project: Path | None = None) -> int:
             check_index_url()  # WHEELGAP_INDEX_URL only matters for the JSON API
         if args.from_log is not None:
             failures = failed_builds(read_log(args.from_log), other_index=origin.other_index(index_url) is not None)
-            listed = ", ".join(f"{name} {version}" for name, version in failures)
+            listed = ", ".join(
+                f"{name} {version}" if version else f"{name} (the log doesn't name the version)"
+                for name, version in failures
+            )
             print(f"wheelgap: note: the install log says these failed to build: {listed}", file=sys.stderr)
             sources = [log_source(failures)]
         else:
@@ -3103,9 +3109,19 @@ def _main(argv: list[str], project: Path | None = None) -> int:
             file=sys.stderr,
         )
     gaps = [r for r in rows if not r.ok]
+    # --from-log: each failed package checked at its latest release, as the log names no version (also in --json and
+    # --markdown, so a report never shows that version as the log's).
+    from_log_notes: list[dict[str, str]] = []
     if args.from_log is not None:
         multi_py = len({t.python for t in targets}) > 1
+        unversioned = {canonicalize_name(name) for name, version in failures if version is None}
         for r in rows:
+            if canonicalize_name(r.package.name) in unversioned and r.package.version:
+                message = LATEST_NOTE.format(name=r.package.name, version=r.package.version)
+                from_log_notes.append(
+                    {"name": r.package.name, "version": r.package.version, "kind": "latest", "message": message}
+                )
+                print(f"wheelgap: note: {message}", file=sys.stderr)
             if fits := [t.label(multi_py) for t, status in r.results.items() if status == Status.WHEEL]:
                 print(
                     f"wheelgap: note: the install log says {r.package.name} failed to build, but "
@@ -3448,6 +3464,7 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 ],
                 image_unread=bool(args.dockerfile_inputs) and unknown_image is not None,
                 directory_inputs=directory_inputs_json(sources),
+                from_log_notes=from_log_notes if args.from_log is not None else None,
             )
         )
         return code
@@ -3484,6 +3501,7 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                     ),
                     *(["", f"> **Warning:** {unseen_line}"] if unseen_line else []),
                     *dockerfile_markdown(dockerfile_results(dockerfile_notes)),
+                    *(line for note in from_log_notes for line in ("", f"> **Note:** {note['message']}")),
                 ]
             )
         )
