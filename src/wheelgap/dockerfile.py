@@ -2505,8 +2505,17 @@ def _project_script(base: str, texts: list[str], stdin: bool = False) -> str | N
     global_install = any(text in ("-g", "--global", "--location=global") for text in texts) or (
         base == "yarn" and "global" in words
     )
+    # npm runs the root package.json's lifecycle scripts only for an install with no package named: a local
+    # `npm install`/`i`/`add` of named packages is a plain program for the same reason a global one is (#725).
+    npm_named_install = base == "npm" and next(
+        (word for word in words if word in _LIFECYCLE_COMMANDS["npm"]), None
+    ) in ("install", "i", "add")
     packages = [word for word in words if word not in ("global", *_LIFECYCLE_COMMANDS.get(base, ()))]
-    if global_install and packages and not any(word.startswith((".", "/", "~", "file:")) for word in packages):
+    if (
+        (global_install or npm_named_install)
+        and packages
+        and not any(word.startswith((".", "/", "~", "file:")) for word in packages)
+    ):
         scripts_off = True
     if base in _LIFECYCLE_COMMANDS and not scripts_off:
         if command := next((word for word in words if word in _LIFECYCLE_COMMANDS[base]), None):

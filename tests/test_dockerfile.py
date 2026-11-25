@@ -4806,6 +4806,29 @@ def test_dockerfile_requirements_passes_over_a_global_install_of_named_packages(
     assert lines == [5] and report.warnings == [] and list(report.passed_over) == ["programs"]
 
 
+# npm runs the root package.json's lifecycle scripts only for an install with no package named (#725), so a
+# local install of named packages is a plain program too.
+@pytest.mark.parametrize("run", ["npm install left-pad --no-save", "npm i left-pad", "npm add left-pad@1"])
+def test_dockerfile_requirements_passes_over_a_local_npm_install_of_named_packages(tmp_path, run):
+    lines, report = _inputs(tmp_path, f"RUN {run}\n{_INSTALL}")
+    assert lines == [5] and report.warnings == [] and list(report.passed_over) == ["programs"]
+    # With --deps too: a plain program isn't a stop before the install.
+    path = _context(tmp_path, f"FROM python:3.13\nWORKDIR /app\nCOPY requirements.txt .\nRUN {run}\n{_INSTALL}")
+    found = dockerfile_requirements(path, constraints={}, dependencies=True)
+    assert [line for line, _ in found] == [5]
+
+
+@pytest.mark.parametrize(
+    "run", ["npm install", "npm install --no-save", "npm install ./tools/x", "npm install file:../lib"]
+)
+def test_dockerfile_requirements_warns_about_a_local_npm_install_of_the_project(tmp_path, run):
+    # No package named, or a path: the project's own scripts run, before the install and after it.
+    _, report = _inputs(tmp_path, f"RUN {run}\n{_INSTALL}")
+    assert [line for line, _ in report.warnings] == [4]
+    _, report = _inputs(tmp_path, f"{_INSTALL}RUN {run}\n")
+    assert [line for line, _ in report.warnings] == [5]
+
+
 @pytest.mark.parametrize("run", ["npm install -g", "npm install -g ./tools/cli", "yarn global add file:./cli"])
 def test_dockerfile_requirements_warns_about_a_global_install_of_the_project(tmp_path, run):
     _, report = _inputs(tmp_path, f"{_INSTALL}RUN {run}\n")
