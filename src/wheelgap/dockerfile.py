@@ -12,7 +12,7 @@ import shlex
 import sys
 import tomllib
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import NoReturn
@@ -1463,26 +1463,32 @@ def _uv_config_files(
 
 
 def _copied_name(
-    copies: list[_Copy], name: str, folders: set[str], ignore_rules: tuple[dockerignore.Rule, ...]
+    copies: list[_Copy],
+    names: tuple[str, ...],
+    folder: Callable[[str], bool],
+    ignore_rules: tuple[dockerignore.Rule, ...],
 ) -> int | None:
-    """The line of a COPY that puts a file or folder called `name` into one of `folders` of the image, or None.
+    """The line of a COPY that puts a file or folder called one of `names` into an image folder `folder` accepts, or
+    None.
 
     A file source lands at dest, or at dest/its own name when dest is (or may be) a folder in the image. A folder's
-    contents land in dest, so `name` lands when dest itself is the name or an entry of the copied tree is."""
+    contents land in dest, so a name lands when dest itself is the name or an entry of the copied tree is.
+    .dockerignore rules match paths from the build context's root, as BuildKit reads them."""
     for copy in copies:
         if copy.error or copy.foreign is not None:
             continue
         dest = posixpath.normpath(copy.dest)
         for rel, host, is_dir in copy.sources:
             if is_dir:
-                if posixpath.basename(dest) == name and posixpath.dirname(dest) in folders:
+                if posixpath.basename(dest) in names and folder(posixpath.dirname(dest)):
                     return copy.line
+                base = "" if rel in (".", "") else f"{rel.rstrip('/')}/"
                 for dirpath, dirnames, filenames in os.walk(host):
                     rel_dir = Path(dirpath).relative_to(host).as_posix()
-                    prefix = "" if rel_dir == "." else f"{rel_dir}/"
+                    prefix = base if rel_dir == "." else f"{base}{rel_dir}/"
                     landing = dest if rel_dir == "." else posixpath.normpath(posixpath.join(dest, rel_dir))
-                    if landing in folders and any(
-                        entry == name and not dockerignore.ignored(f"{prefix}{entry}", ignore_rules)
+                    if folder(landing) and any(
+                        entry in names and not dockerignore.ignored(f"{prefix}{entry}", ignore_rules)
                         for entry in (*filenames, *dirnames)
                     ):
                         return copy.line
@@ -1492,7 +1498,7 @@ def _copied_name(
                 if not copy.into:  # dest may be a folder in the image: either name may be the one the file gets
                     landed += [dest, posixpath.join(dest, posixpath.basename(rel))]
                 if any(
-                    posixpath.basename(path) == name and posixpath.dirname(path) in folders for path in landed
+                    posixpath.basename(path) in names and folder(posixpath.dirname(path)) for path in landed
                 ) and not dockerignore.ignored(rel, ignore_rules):
                     return copy.line
     return None
@@ -2622,6 +2628,7 @@ class _RunReader:
         cwd, cwd_error = workdir, workdir_error
         depth = 0  # inside if, for, while, until or { }
         risky_setting: str | None = None
+        project_environment = False  # UV_PROJECT_ENVIRONMENT set on this RUN, which a read `uv sync` refuses
         names_installer = False  # a pip or uv command, read or not
         exited: str | None = None  # an `exit` or `return` before the command: it may never run
         image_path = self.path  # a RUN is a shell of its own: what it does to PATH ends with it
@@ -2692,6 +2699,8 @@ class _RunReader:
             for name, value in assigns:
                 if _installer_setting(name):
                     risky_setting = name
+                if name == "UV_PROJECT_ENVIRONMENT":
+                    project_environment = True
                 if name == "PATH":
                     self.path = self._path_entry(value.text, f"line {number}")
             if first in ("exit", "return") and not command.nested and not command.subshell:
@@ -2706,6 +2715,11 @@ class _RunReader:
             if kind in ("install", "installer-tools", "pip"):
                 names_installer = True
             if isinstance(detail, _Install):
+                if detail.sync and project_environment:
+                    stop(
+                        "UV_PROJECT_ENVIRONMENT is set on this RUN, and `uv sync` may then install into an "
+                        "environment with a Python --dockerfile-inputs doesn't know"
+                    )
                 if conditional:
                     stop(f"`{' '.join(texts)}` is {conditional}, so --dockerfile-inputs can't tell whether it runs")
                 if special:
@@ -3550,7 +3564,7 @@ def dockerfile_requirements(
     project must sit in the folder the line runs in (uv searches ancestors too, which isn't read), the lock and
     pyproject.toml must come from beside each other in the build context (the lock's selection is read from a
     pyproject.toml beside it on disk), a second `uv sync` line, a copied uv.toml or [tool.uv] table, a copied
-    .python-version or .venv the sync could use instead of the image's Python, a requires-python the checked
+    .python-version(s) or .venv the sync could use instead of the image's Python, a requires-python the checked
     Pythons don't satisfy, and UV_PROJECT_ENVIRONMENT are all DockerfileError, naming the line.
     """
     try:
@@ -3883,24 +3897,31 @@ def _dockerfile_requirements(
             )
         # A .python-version, a .venv uv would reuse, or a config file changes which Python and packages the sync
         # gets. One copied or created earlier is an error; one a plain `python -m venv` makes is not (reader.venvs
-        # knows its Python is the image's).
+        # knows its Python is the image's). uv 0.13.9 reads a .python-versions file as well (its first version), and
+        # the global pin `uv python pin --global` writes in its user config folder ($XDG_CONFIG_HOME/uv or
+        # ~/.config/uv), so any folder called uv counts too.
+        pins = (".python-version", ".python-versions")
+
+        def pin_folder(folder: str) -> bool:
+            return folder in ancestors or posixpath.basename(folder) == "uv"
+
         for line, word, cwd in reader.mentions[: install.seen]:
             if word.startswith("/") or cwd is not None:
                 path = posixpath.normpath(posixpath.join(cwd or "/", word))
-                put = posixpath.basename(path) == ".python-version" and posixpath.dirname(path) in ancestors
+                put = posixpath.basename(path) in pins and pin_folder(posixpath.dirname(path))
             else:
-                put = posixpath.basename(word) == ".python-version"
+                put = posixpath.basename(word) in pins
             if put:
                 raise DockerfileError(
-                    f"line {line}: this line may put a .python-version where `uv sync` on line {number} reads it, "
-                    "which may make uv use another Python than the one checked"
+                    f"line {line}: this line may put a {posixpath.basename(word)} where `uv sync` on line {number} "
+                    "reads it, which may make uv use another Python than the one checked"
                 )
-        if copy_line := _copied_name(copies, ".python-version", ancestors, ignore_rules):
+        if copy_line := _copied_name(copies, pins, pin_folder, ignore_rules):
             raise DockerfileError(
-                f"line {copy_line}: a .python-version in the project's folder may make `uv sync` on line {number} "
-                "use another Python than the one checked"
+                f"line {copy_line}: a .python-version or .python-versions in the project's folder (or uv's config "
+                f"folder) may make `uv sync` on line {number} use another Python than the one checked"
             )
-        if copy_line := _copied_name(copies, ".venv", {install.cwd}, ignore_rules):
+        if copy_line := _copied_name(copies, (".venv",), lambda folder: folder == install.cwd, ignore_rules):
             raise DockerfileError(
                 f"line {copy_line}: a .venv in the project's folder may give `uv sync` on line {number} an "
                 "environment with a Python --dockerfile-inputs doesn't know"

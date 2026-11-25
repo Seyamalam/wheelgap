@@ -12,7 +12,7 @@ import sys
 import sysconfig
 import tomllib
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import packaging
@@ -2701,22 +2701,29 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 select_pyproject_extras(source, args.extra or [], args.all_extras)
         # A `uv sync` line's own flags are its lock's selection, applied below even with no selectors of
         # wheelgap's own: `wheelgap uv.lock` with no flags checks all groups and extras, but a sync without them
-        # installs the defaults (and dev only without --no-dev). Selectors from wheelgap's command line or config
-        # apply to a sync lock as they do to a uv.lock given as an input.
-        sync_locks = {requirements for line, requirements in installs if (line, requirements) in uv_syncs}
-        selection = UvSelection(
-            extras=frozenset(canonicalize_name(name) for name in extra_names or []),
-            all_extras=args.all_extras,
-            groups=frozenset(canonicalize_name(name) for name in group_names or []),
-            no_dev=args.no_dev,
-            only_groups=frozenset(canonicalize_name(name) for name in args.only_group or []),
-        )
+        # installs the defaults (and dev only without --no-dev). The line is what the image installs, so wheelgap's
+        # own selectors don't apply to its lock: on the command line they are an error (as they are for a -r file
+        # of the Dockerfile), and configured ones ([tool.wheelgap] extras and groups) leave it as the line says.
+        sync_locks = {requirements: line for line, requirements in installs if (line, requirements) in uv_syncs}
+        if sync_locks and (from_cli or args.only_group):
+            sync_line = min(sync_locks.values())
+            raise SourceError(
+                "--extra, --all-extras, --group, --only-group and --no-dev don't apply to --dockerfile-inputs: "
+                f"`uv sync` on {args.dockerfile}:{sync_line} picks what the image installs"
+            )
+        lock_sources = [s for s in lock_sources if s.path not in sync_locks]
         if (from_cli or args.only_group or extra_names is not None or group_names is not None) and (
             lock_sources or not pyproject_sources
         ):
             select_uv_dependencies(
                 lock_sources,
-                selection,
+                UvSelection(
+                    extras=frozenset(canonicalize_name(name) for name in extra_names or []),
+                    all_extras=args.all_extras,
+                    groups=frozenset(canonicalize_name(name) for name in group_names or []),
+                    no_dev=args.no_dev,
+                    only_groups=frozenset(canonicalize_name(name) for name in args.only_group or []),
+                ),
                 # Configured extras apply to uv.lock and Poetry 2.x poetry.lock inputs, configured groups to those
                 # and pdm.lock inputs; on the command line they need one of those.
                 strict=bool(from_cli or args.only_group),
@@ -2724,14 +2731,10 @@ def _main(argv: list[str], project: Path | None = None) -> int:
                 poetry=bool(from_cli or args.only_group) or group_names is not None or extra_names is not None,
                 pdm=bool(from_cli or args.only_group) or group_names is not None,
             )
-        for source in lock_sources:
-            if source.path in sync_locks:
-                sync_line = next(install_line for install_line, requirements in installs if requirements == source.path)
-                select_uv_dependencies(
-                    [source],
-                    replace(selection, no_dev=selection.no_dev or uv_syncs[sync_line, source.path][0]),
-                    strict=False,
-                )
+        for source in sources:
+            if source.path in sync_locks and source.pyproject_extras is None:
+                no_dev, _ = uv_syncs[sync_locks[source.path], source.path]
+                select_uv_dependencies([source], UvSelection(no_dev=no_dev), strict=False)
         if args.deps:
             dependency_sources = [s for s in sources if s.specs or s.pyproject_extras is not None]
             if not dependency_sources:
