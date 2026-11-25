@@ -64,11 +64,13 @@ _INSTALL_VALUE_OPTIONS = frozenset(
 # file:///...` (`pip install -e .`).
 _LOCAL = re.compile(r" {0,2}(?:Processing|Obtaining) (\S+)")
 # pip's error when a package's sdist fails before `Building wheel for`: getting its build requirements, or its
-# metadata. pip prints it twice (indented, then at column 0) and names no package: it's the one collected last.
+# metadata, or installing its build dependencies (`pip subprocess to install build dependencies`): the sdist's own
+# build never ran, so the failure is the package's, whatever failed inside the subprocess. pip prints it twice
+# (indented, then at column 0) and names no package: it's the one collected last.
 _PREPARE_FAILED = re.compile(
     r" {0,2}(?:(?:× ?)?(?:Getting requirements to build (?:wheel|editable)|Preparing (?:editable )?metadata "
-    r"\([^)]*\)) did not run successfully\.?|error: metadata-generation-failed|(?:× ?)?Encountered error while "
-    r"generating package metadata\.?)\s*"
+    r"\([^)]*\)|pip subprocess to install build dependencies) did not run successfully\.?|error: "
+    r"metadata-generation-failed|(?:× ?)?Encountered error while generating package metadata\.?)\s*"
 )
 # The end of a pip run that installed what it was asked to; the next run in the same log starts afresh.
 _INSTALLED = re.compile(r"Successfully installed ")

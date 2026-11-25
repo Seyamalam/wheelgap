@@ -357,6 +357,7 @@ PREPARE_FAILED = [
     "  × Preparing metadata (pyproject.toml) did not run successfully.",
     "error: metadata-generation-failed",
     "× Encountered error while generating package metadata.",
+    "  × pip subprocess to install build dependencies did not run successfully.",
 ]
 
 
@@ -369,6 +370,28 @@ def test_a_failure_before_building_is_the_sdist_collected_last(error):
         f"{error}\n"
     )
     assert failed_builds(text) == [("nowheels", "0.9")]
+
+
+def test_a_build_dependencies_subprocess_failure_is_the_sdist_collected_last():
+    # The shape of timvink/mkdocs-table-reader-plugin#46: pandas's own build never runs, because numpy fails inside
+    # the pip that installs its build dependencies. The inner pip's lines are the subprocess's quoted output, so
+    # numpy is neither collected nor failed in this run; the failure is pandas's.
+    text = (
+        "Collecting pandas>=1.1\n  Downloading pandas-1.5.3.tar.gz (5.2 MB)\n"
+        "  Installing build dependencies: started\n  Installing build dependencies: finished with status 'error'\n"
+        "  error: subprocess-exited-with-error\n\n"
+        "  \u00d7 pip subprocess to install build dependencies did not run successfully.\n"
+        "  \u2502 exit code: 1\n  \u2570\u2500> [6 lines of output]\n"
+        "      Collecting numpy==1.23.2\n        Downloading numpy-1.23.2.tar.gz (10.7 MB)\n"
+        "      Building wheels for collected packages: numpy\n"
+        "        Building wheel for numpy (pyproject.toml): finished with status 'error'\n"
+        "        ERROR: Failed building wheel for numpy\n"
+        "      ERROR: Failed to build installable wheels for some pyproject.toml based projects (numpy)\n"
+        "      [end of output]\n\n"
+        "  note: This error originates from a subprocess, and is likely not a problem with pip.\n"
+        "ERROR: pip subprocess to install build dependencies did not run successfully.\n"
+    )
+    assert failed_builds(text) == [("pandas", "1.5.3")]
 
 
 @pytest.mark.parametrize(
