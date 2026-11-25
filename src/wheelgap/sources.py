@@ -3556,6 +3556,14 @@ def check_report_targets(source: Source, targets: Iterable[Target]) -> None:
     # ones, so it can install other packages. A wheel only one libc's pip accepts is proof the resolution isn't
     # one the other's makes, so the other family is refused; a report with no such wheel either way is taken at
     # face value, and one with both (pip run with two --platform values) is refused for both.
+    if source.pip_report_musl and source.pip_report_glibc:
+        if wrong := [t.label(True) for t in targets if PLATFORMS[t.platform][0] in ("manylinux", "musllinux")]:
+            raise SourceError(
+                f"{source.label}: this report downloaded both a musllinux wheel pip on glibc doesn't accept and a "
+                "manylinux wheel pip on musl doesn't accept (pip run with two --platform values?), so it isn't a "
+                f"resolution either libc's pip makes — it can't be checked on {', '.join(wrong)}: make one report "
+                "on glibc and one on musl"
+            )
     if source.pip_report_musl:
         if wrong := [t.label(True) for t in targets if PLATFORMS[t.platform][0] == "manylinux"]:
             raise SourceError(

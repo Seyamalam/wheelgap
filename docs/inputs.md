@@ -398,7 +398,7 @@ musl and glibc Linux record the same environment, but pip resolves a different s
 `musllinux` wheels and not `manylinux` ones. A wheel only one libc's pip accepts is proof the resolution isn't one
 the other's pip makes, so a report with a `manylinux` wheel in its downloads is refused on `musl-*` targets, one
 with a `musllinux` wheel on the glibc `linux-*` ones, and one with both (pip run with two `--platform` values) on
-the two families. A report without either is taken at face value on both, evidence or not: it may be pure Python,
+the two families. A report with neither is taken at face value on both families, though it may not be a resolution both make: it may be pure Python,
 or an Alpine report that pinned an older sdist where glibc pip would have taken a newer manylinux-only release.
 
 ## Requirements files
