@@ -1818,8 +1818,9 @@ _PIP_FLAGS_READ = (
 # --quiet (-q), --compile and --break-system-packages with the same meaning, it has no --no-input, --root-user-action
 # or --prefer-binary, and it takes --disable-pip-version-check only to warn that it does nothing (`uv pip install
 # --help`, uv 0.13.1; --compile is a hidden alias of --compile-bytecode). --strict only checks the environment after
-# the install and warns (exit 0), --reinstall only installs the same requirements again, and --no-python-downloads
-# doesn't change the Python --system finds.
+# the install and warns (exit 0), and --no-python-downloads doesn't change the Python --system finds.
+# --reinstall only installs the same requirements again; --refresh only revalidates cached data, which can't pick
+# another version for the pinned requirements a uv line is read for.
 # https://docs.astral.sh/uv/reference/cli/#uv-pip-install
 _UV_HARMLESS_FLAGS = (
     "--no-cache",
@@ -1832,6 +1833,7 @@ _UV_HARMLESS_FLAGS = (
     "--compile",
     "--no-progress",
     "--reinstall",
+    "--refresh",
     "--break-system-packages",
     "--strict",
     "--no-python-downloads",
@@ -1856,7 +1858,8 @@ _UV_VALUE_FLAGS = {
 _UV_GLOBAL_VALUE_FLAGS = {"--color": _UV_VALUE_FLAGS["--color"]}
 _UV_FLAGS_READ = (
     "--system, -r FILE, -c FILE, --no-cache, --no-cache-dir, --upgrade (-U), --quiet (-q), "
-    "--compile-bytecode (--compile), --no-progress, --reinstall, --link-mode, --output-format, --color, "
+    "--compile-bytecode (--compile), --no-progress, --reinstall, --refresh, "
+    "--link-mode, --output-format, --color, "
     "--break-system-packages, --strict, --no-python-downloads, --system-certs and --no-deps"
 )
 

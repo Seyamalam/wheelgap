@@ -3576,6 +3576,7 @@ _UV_RUN = "FROM python:3.13\nWORKDIR /app\nCOPY {} ./\nRUN uv pip install --syst
         "--compile",
         "--no-progress",
         "--reinstall",
+        "--refresh",
         "--link-mode copy",
         "--link-mode=copy",
         "--output-format json",
@@ -3630,7 +3631,8 @@ def test_dockerfile_requirements_refuses_pip_only_flags_on_a_uv_line(tmp_path, f
     message = (
         f":4: uv pip install {re.escape(flags.split()[0])}: --dockerfile-inputs only reads --system, -r FILE, "
         r"-c FILE, --no-cache, --no-cache-dir, --upgrade \(-U\), --quiet \(-q\), "
-        r"--compile-bytecode \(--compile\), --no-progress, --reinstall, --link-mode, --output-format, --color, "
+        r"--compile-bytecode \(--compile\), --no-progress, --reinstall, --refresh, "
+        r"--link-mode, --output-format, --color, "
         r"--break-system-packages, --strict, --no-python-downloads, --system-certs and --no-deps for uv"
     )
     with pytest.raises(DockerfileError, match=message):
