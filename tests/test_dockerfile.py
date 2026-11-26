@@ -2555,6 +2555,7 @@ _UV_SYNC = "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nRUN 
         # The harmless global flags pip install's reader also takes, after the subcommand.
         ("uv sync --quiet --locked", False),
         ("uv sync --locked --no-progress", False),
+        ("uv sync --locked --system-certs", False),
         # `cd` on the line, to where the files are, or where WORKDIR left the RUN already.
         ("cd /app && uv sync --locked", False),
         ("uv sync --locked && rm uv.lock", False),
@@ -2615,6 +2616,7 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         # uv may relock without --locked/--frozen, or install a selection the flags change.
         ("uv sync", "needs exactly one of --locked or --frozen"),
         ("uv sync --no-dev", "needs exactly one of --locked or --frozen"),
+        ("uv sync --system-certs", "needs exactly one of --locked or --frozen"),
         ("uv sync --no-install-project", "needs exactly one of --locked or --frozen"),
         ("uv sync --no-install-workspace", "needs exactly one of --locked or --frozen"),
         ("uv sync --no-install-local", "needs exactly one of --locked or --frozen"),
@@ -3572,6 +3574,7 @@ _UV_RUN = "FROM python:3.13\nWORKDIR /app\nCOPY {} ./\nRUN uv pip install --syst
         "--break-system-packages",
         "--strict",
         "--no-python-downloads",
+        "--system-certs",
         "--no-deps",
         "-U -q --no-cache",
         "-U --compile-bytecode --link-mode copy --no-deps",
@@ -3617,7 +3620,7 @@ def test_dockerfile_requirements_refuses_pip_only_flags_on_a_uv_line(tmp_path, f
         f":4: uv pip install {re.escape(flags.split()[0])}: --dockerfile-inputs only reads --system, -r FILE, "
         r"-c FILE, --no-cache, --no-cache-dir, --upgrade \(-U\), --quiet \(-q\), "
         r"--compile-bytecode \(--compile\), --no-progress, --link-mode, --output-format, --break-system-packages, "
-        r"--strict, --no-python-downloads and --no-deps for uv"
+        r"--strict, --no-python-downloads, --system-certs and --no-deps for uv"
     )
     with pytest.raises(DockerfileError, match=message):
         dockerfile_requirements(path, uv_installs=set())
@@ -4636,6 +4639,7 @@ _INSTALL = "RUN pip install -r requirements.txt\n"
         ("RUN pip --no-cache-dir install -r requirements.txt > /dev/null 2>&1\n", {}),
         ("RUN pip -q --no-color install -r requirements.txt\n", {}),
         ("RUN uv pip --no-progress install --system -r requirements.txt\n", {}),
+        ("RUN uv pip --system-certs install --system -r requirements.txt\n", {}),
         ("RUN /usr/local/bin/pip install -r /app/requirements.txt\n", {}),
         ("RUN cd / && pip install -r app/requirements.txt\n", {"shell": [4]}),
         ("RUN python -m venv /opt/venv && /opt/venv/bin/pip install -r requirements.txt\n", {"venv": [4]}),

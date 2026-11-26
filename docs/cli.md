@@ -188,7 +188,7 @@ them (`--no-input`, `--disable-pip-version-check`, `--root-user-action`, `--pref
 | Flag | Read |
 | --- | --- |
 | `-r FILE` / `--requirement FILE` and `-c FILE` / `--constraint FILE` (uv also spells them `--requirements`, `--constraints`) | Only `*.txt` or `*.in` files: uv reads other names as locks, scripts or projects |
-| `--no-cache`, `--no-cache-dir`, `--upgrade` / `-U`, `-q` / `--quiet`, `--compile-bytecode` (and its alias `--compile`), `--no-progress`, `--break-system-packages`, `--strict` (it only warns after the install), `--no-python-downloads`, `--no-deps` | Taken with no value |
+| `--no-cache`, `--no-cache-dir`, `--upgrade` / `-U`, `-q` / `--quiet`, `--compile-bytecode` (and its alias `--compile`), `--no-progress`, `--break-system-packages`, `--strict` (it only warns after the install), `--no-python-downloads`, `--system-certs`, `--no-deps` | Taken with no value |
 | `--link-mode clone` / `copy` / `hardlink` / `symlink` (or `=copy`) | uv's only values |
 | `--output-format text` / `json` (or `=json`) | uv's only values: output alone |
 
@@ -207,7 +207,7 @@ since it may change the installed set.
 | `--compile-bytecode` / `--compile`, `--reinstall`, `--refresh` | Taken with no value: they don't change which locked dependencies are installed |
 | `--link-mode clone` / `copy` / `hardlink` / `symlink` (or `=copy`) | uv's only values: how cache files are linked doesn't change which locked dependencies are installed |
 | `--output-format text` / `json` (or `=json`) | uv's only values: output alone doesn't change which locked dependencies are installed |
-| `-q` / `--quiet`, `--no-cache` / `--no-cache-dir`, `--no-progress`, `--no-python-downloads` | Taken with no value |
+| `-q` / `--quiet`, `--no-cache` / `--no-cache-dir`, `--no-progress`, `--no-python-downloads`, `--system-certs` | Taken with no value |
 
 The line is the selection: `--extra`, `--all-extras`, `--group`, `--only-group` and `--no-dev` on wheelgap's command
 line are an error with it (they would check another set than the image gets), and `[tool.wheelgap]` `extras` and

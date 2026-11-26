@@ -1833,10 +1833,19 @@ _UV_HARMLESS_FLAGS = (
     "--break-system-packages",
     "--strict",
     "--no-python-downloads",
+    "--system-certs",
 )
 # uv's global options among them, which it also takes between `pip` and `install`; uv 0.13.1 exits on the others
 # there (`uv pip --compile-bytecode install`: "unexpected argument").
-_UV_GLOBAL_FLAGS = ("--no-cache", "--no-cache-dir", "-q", "--quiet", "--no-progress", "--no-python-downloads")
+_UV_GLOBAL_FLAGS = (
+    "--no-cache",
+    "--no-cache-dir",
+    "-q",
+    "--quiet",
+    "--no-progress",
+    "--no-python-downloads",
+    "--system-certs",
+)
 _UV_VALUE_FLAGS = {
     "--link-mode": "clone|copy|hardlink|symlink",
     "--output-format": "text|json",
@@ -1844,7 +1853,7 @@ _UV_VALUE_FLAGS = {
 _UV_FLAGS_READ = (
     "--system, -r FILE, -c FILE, --no-cache, --no-cache-dir, --upgrade (-U), --quiet (-q), "
     "--compile-bytecode (--compile), --no-progress, --link-mode, --output-format, --break-system-packages, "
-    "--strict, --no-python-downloads and --no-deps"
+    "--strict, --no-python-downloads, --system-certs and --no-deps"
 )
 
 
