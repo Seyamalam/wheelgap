@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `--dockerfile-inputs`: a `uv sync --locked` or `--frozen` line may also use `--refresh`: refreshing uv's cache doesn't change which locked dependencies or artifacts it installs, so the answer is unchanged. (#765, thanks [@Seyamalam](https://github.com/Seyamalam))
 - `--dockerfile-inputs`: a `uv sync --locked` or `--frozen` line may also use `--reinstall`: uv installs the same locked artifacts again rather than changing which locked dependencies it installs, so the answer is unchanged. (#764, thanks [@Seyamalam](https://github.com/Seyamalam))
 - `--dockerfile-inputs`: a `uv sync --locked` or `--frozen` line may also use `--link-mode` with uv's `clone`, `copy`, `hardlink` or `symlink` values: how cache files are linked doesn't change which locked dependencies uv installs, so the answer is unchanged. (#763, thanks [@Seyamalam](https://github.com/Seyamalam))
 - `--dockerfile-inputs`: a `uv sync --locked` or `--frozen` line may also use `--compile-bytecode` or its alias `--compile`: bytecode compilation happens after installation and doesn't change which locked dependencies uv installs, so the answer is unchanged. (#762, thanks [@Seyamalam](https://github.com/Seyamalam))
