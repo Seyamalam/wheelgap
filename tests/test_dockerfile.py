@@ -2555,6 +2555,8 @@ _UV_SYNC = "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nRUN 
         ("uv sync --locked --refresh", False),
         ("uv sync --locked --refresh-package packaging", False),
         ("uv sync --locked --refresh-package=packaging", False),
+        ("uv sync --locked --reinstall-package packaging", False),
+        ("uv sync --locked --reinstall-package=packaging", False),
         ("uv sync --locked --inexact", False),
         ("uv sync --locked --no-install-project --no-editable --no-dev", True),
         # The harmless global flags pip install's reader also takes, after the subcommand.
@@ -2632,6 +2634,7 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         ("uv sync --reinstall", "needs exactly one of --locked or --frozen"),
         ("uv sync --refresh", "needs exactly one of --locked or --frozen"),
         ("uv sync --refresh-package packaging", "needs exactly one of --locked or --frozen"),
+        ("uv sync --reinstall-package packaging", "needs exactly one of --locked or --frozen"),
         ("uv sync --inexact", "needs exactly one of --locked or --frozen"),
         ("uv sync --locked --link-mode bogus", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --link-mode=bogus", "only `uv sync --locked` or `--frozen`"),
@@ -2645,6 +2648,9 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         ("uv sync --locked --refresh-package bad!", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --refresh-package=bad!", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --refresh-package", "only `uv sync --locked` or `--frozen`"),
+        ("uv sync --locked --reinstall-package bad!", "only `uv sync --locked` or `--frozen`"),
+        ("uv sync --locked --reinstall-package=bad!", "only `uv sync --locked` or `--frozen`"),
+        ("uv sync --locked --reinstall-package", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --frozen", "needs exactly one of --locked or --frozen"),
         ("uv sync --locked --all-extras", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --all-groups", "only `uv sync --locked` or `--frozen`"),
@@ -3585,6 +3591,8 @@ _UV_RUN = "FROM python:3.13\nWORKDIR /app\nCOPY {} ./\nRUN uv pip install --syst
         "--refresh",
         "--refresh-package packaging",
         "--refresh-package=packaging",
+        "--reinstall-package packaging",
+        "--reinstall-package=packaging",
         "--link-mode copy",
         "--link-mode=copy",
         "--output-format json",
@@ -3639,8 +3647,8 @@ def test_dockerfile_requirements_refuses_pip_only_flags_on_a_uv_line(tmp_path, f
     message = (
         f":4: uv pip install {re.escape(flags.split()[0])}: --dockerfile-inputs only reads --system, -r FILE, "
         r"-c FILE, --no-cache, --no-cache-dir, --upgrade \(-U\), --quiet \(-q\), "
-        r"--compile-bytecode \(--compile\), --no-progress, --reinstall, --refresh, --refresh-package NAME, "
-        r"--link-mode, --output-format, --color, "
+        r"--compile-bytecode \(--compile\), --no-progress, --reinstall, --refresh, "
+        r"--refresh-package NAME, --reinstall-package NAME, --link-mode, --output-format, --color, "
         r"--break-system-packages, --strict, --no-python-downloads, --system-certs and --no-deps for uv"
     )
     with pytest.raises(DockerfileError, match=message):
@@ -3703,12 +3711,15 @@ def test_dockerfile_requirements_refuses_uv_only_flags_on_a_pip_line(tmp_path, f
         "--refresh-package=bad!",
         "--refresh-package é",
         "--refresh-package",
+        "--reinstall-package bad!",
+        "--reinstall-package=bad!",
+        "--reinstall-package",
     ],
 )
 def test_dockerfile_requirements_refuses_a_value_uv_does_not_take(tmp_path, flags):
     # uv exits on a --link-mode other than clone, copy, hardlink or symlink, an --output-format other than text or
-    # json, or a --refresh-package value that isn't a package name (`uv pip install --help`, uv 0.13.1), and the
-    # word after the flag is never taken for a requirement.
+    # json, or a --refresh-package/--reinstall-package value that isn't a package name (`uv pip install --help`,
+    # uv 0.13.1), and the word after the flag is never taken for a requirement.
     path = _context(tmp_path, _UV_RUN.format("requirements.txt", f"{flags} -r requirements.txt"))
     with pytest.raises(DockerfileError, match=rf":4: uv pip install {re.escape(flags.split()[0])}: "):
         dockerfile_requirements(path, uv_installs=set())
