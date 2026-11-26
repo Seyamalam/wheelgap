@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `--dockerfile-inputs`: a `uv sync --locked` or `--frozen` line and a read `uv pip install` line may also use `--output-format` with uv's `text` or `json` values: output alone doesn't change which locked dependencies or artifacts uv installs, so the answer is unchanged. (#767, thanks [@Seyamalam](https://github.com/Seyamalam))
 - `--dockerfile-inputs`: `UV_NO_INSTALL_PROJECT`, `UV_NO_INSTALL_WORKSPACE`, `UV_NO_INSTALL_LOCAL` and `UV_NO_EDITABLE` in an `ENV` or `ARG` no longer refuse a read `uv sync`: like the command-line flags, they only decide whether or how first-party packages are installed, not which locked registry dependencies uv installs. (#766, thanks [@Seyamalam](https://github.com/Seyamalam))
 - `--dockerfile-inputs`: a `uv sync --locked` or `--frozen` line may also use `--refresh`: refreshing uv's cache doesn't change which locked dependencies or artifacts it installs, so the answer is unchanged. (#765, thanks [@Seyamalam](https://github.com/Seyamalam))
 - `--dockerfile-inputs`: a `uv sync --locked` or `--frozen` line may also use `--reinstall`: uv installs the same locked artifacts again rather than changing which locked dependencies it installs, so the answer is unchanged. (#764, thanks [@Seyamalam](https://github.com/Seyamalam))
