@@ -2336,7 +2336,8 @@ _PIP_HARMLESS_ENV = frozenset(
     "PIP_NO_COMPILE PIP_COMPILE PIP_BREAK_SYSTEM_PACKAGES PIP_NO_PYTHON_VERSION_WARNING".split()
 )
 # The same for uv (https://docs.astral.sh/uv/reference/environment/): the cache, bytecode, how files are linked,
-# what is printed, network patience, where uv keeps Pythons and tools, and UV_PROJECT_ENVIRONMENT, which only
+# what is printed, network patience, where uv keeps Pythons and tools, the no-install/no-editable switches for
+# first-party packages (which wheelgap skips either way), and UV_PROJECT_ENVIRONMENT, which only
 # project commands use (a read `uv sync` refuses it itself, where it may change the environment), and
 # UV_SYSTEM_CERTS, which picks where TLS certificates come from (a
 # string in the uv 0.13.1 binary). UV_SYSTEM_PYTHON is read as --system. UV_VERSION isn't a uv setting
@@ -2344,7 +2345,8 @@ _PIP_HARMLESS_ENV = frozenset(
 _UV_HARMLESS_ENV = frozenset(
     "UV_NO_CACHE UV_CACHE_DIR UV_COMPILE_BYTECODE UV_LINK_MODE UV_NO_PROGRESS UV_HTTP_TIMEOUT UV_HTTP_RETRIES "
     "UV_CONCURRENT_DOWNLOADS UV_CONCURRENT_BUILDS UV_CONCURRENT_INSTALLS UV_PYTHON_DOWNLOADS UV_PYTHON_INSTALL_DIR "
-    "UV_TOOL_BIN_DIR UV_TOOL_DIR UV_INSTALL_DIR UV_BREAK_SYSTEM_PACKAGES UV_PROJECT_ENVIRONMENT UV_SYSTEM_PYTHON "
+    "UV_TOOL_BIN_DIR UV_TOOL_DIR UV_INSTALL_DIR UV_BREAK_SYSTEM_PACKAGES UV_NO_INSTALL_PROJECT "
+    "UV_NO_INSTALL_WORKSPACE UV_NO_INSTALL_LOCAL UV_NO_EDITABLE UV_PROJECT_ENVIRONMENT UV_SYSTEM_PYTHON "
     "UV_SYSTEM_CERTS UV_VERSION".split()
 )
 # Words that name a pip or uv configuration file: a command that isn't read and names one may be writing it.

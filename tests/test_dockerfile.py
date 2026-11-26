@@ -2565,6 +2565,16 @@ def test_dockerfile_inputs_uv_sync_reads_the_copied_lock(tmp_path, run, no_dev):
 
 
 @pytest.mark.parametrize(
+    "name", ("UV_NO_INSTALL_PROJECT", "UV_NO_INSTALL_WORKSPACE", "UV_NO_INSTALL_LOCAL", "UV_NO_EDITABLE")
+)
+def test_dockerfile_inputs_uv_sync_reads_with_first_party_install_env(tmp_path, name):
+    dockerfile = f"FROM python:3.13\nWORKDIR /app\nENV {name}=1\nCOPY uv.lock pyproject.toml ./\nRUN uv sync --locked\n"
+    found, uv_syncs = _sync_inputs(tmp_path, dockerfile)
+    assert found == [(5, tmp_path / "uv.lock")]
+    assert uv_syncs == {(5, tmp_path / "uv.lock"): (False, tmp_path / "pyproject.toml", None, None)}
+
+
+@pytest.mark.parametrize(
     ("copy", "files", "lock", "pyproject"),
     [
         # One COPY of a folder that holds both, and each of the file forms Docker takes.
@@ -5203,7 +5213,8 @@ _SETTINGS = (
     "PIP_NO_COMPILE PIP_COMPILE PIP_BREAK_SYSTEM_PACKAGES PIP_NO_PYTHON_VERSION_WARNING UV_NO_CACHE UV_CACHE_DIR "
     "UV_COMPILE_BYTECODE UV_LINK_MODE UV_NO_PROGRESS UV_HTTP_TIMEOUT UV_HTTP_RETRIES UV_CONCURRENT_DOWNLOADS "
     "UV_CONCURRENT_BUILDS UV_CONCURRENT_INSTALLS UV_PYTHON_DOWNLOADS UV_PYTHON_INSTALL_DIR UV_TOOL_BIN_DIR UV_TOOL_DIR "
-    "UV_INSTALL_DIR UV_BREAK_SYSTEM_PACKAGES UV_PROJECT_ENVIRONMENT UV_SYSTEM_PYTHON UV_SYSTEM_CERTS UV_VERSION "
+    "UV_INSTALL_DIR UV_BREAK_SYSTEM_PACKAGES UV_NO_INSTALL_PROJECT UV_NO_INSTALL_WORKSPACE UV_NO_INSTALL_LOCAL "
+    "UV_NO_EDITABLE UV_PROJECT_ENVIRONMENT UV_SYSTEM_PYTHON UV_SYSTEM_CERTS UV_VERSION "
     "PYTHONUNBUFFERED "
     "pip_index_url NOTE"
 ).split()
