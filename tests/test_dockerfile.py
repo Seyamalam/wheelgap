@@ -2549,6 +2549,8 @@ _UV_SYNC = "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nRUN 
         ("uv sync --locked --link-mode=hardlink", False),
         ("uv sync --locked --output-format json", False),
         ("uv sync --locked --output-format=text", False),
+        ("uv sync --locked --color never", False),
+        ("uv sync --locked --color=always", False),
         ("uv sync --locked --reinstall", False),
         ("uv sync --locked --refresh", False),
         ("uv sync --locked --inexact", False),
@@ -2624,6 +2626,7 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         ("uv sync --compile-bytecode", "needs exactly one of --locked or --frozen"),
         ("uv sync --link-mode copy", "needs exactly one of --locked or --frozen"),
         ("uv sync --output-format json", "needs exactly one of --locked or --frozen"),
+        ("uv sync --color never", "needs exactly one of --locked or --frozen"),
         ("uv sync --reinstall", "needs exactly one of --locked or --frozen"),
         ("uv sync --refresh", "needs exactly one of --locked or --frozen"),
         ("uv sync --inexact", "needs exactly one of --locked or --frozen"),
@@ -2633,6 +2636,9 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         ("uv sync --locked --output-format bogus", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --output-format=bogus", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --output-format", "only `uv sync --locked` or `--frozen`"),
+        ("uv sync --locked --color bogus", "only `uv sync --locked` or `--frozen`"),
+        ("uv sync --locked --color=bogus", "only `uv sync --locked` or `--frozen`"),
+        ("uv sync --locked --color", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --frozen", "needs exactly one of --locked or --frozen"),
         ("uv sync --locked --all-extras", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --all-groups", "only `uv sync --locked` or `--frozen`"),
@@ -3573,6 +3579,8 @@ _UV_RUN = "FROM python:3.13\nWORKDIR /app\nCOPY {} ./\nRUN uv pip install --syst
         "--link-mode=copy",
         "--output-format json",
         "--output-format=text",
+        "--color never",
+        "--color=always",
         "--break-system-packages",
         "--strict",
         "--no-python-downloads",
@@ -3621,8 +3629,8 @@ def test_dockerfile_requirements_refuses_pip_only_flags_on_a_uv_line(tmp_path, f
     message = (
         f":4: uv pip install {re.escape(flags.split()[0])}: --dockerfile-inputs only reads --system, -r FILE, "
         r"-c FILE, --no-cache, --no-cache-dir, --upgrade \(-U\), --quiet \(-q\), "
-        r"--compile-bytecode \(--compile\), --no-progress, --link-mode, --output-format, --break-system-packages, "
-        r"--strict, --no-python-downloads, --system-certs and --no-deps for uv"
+        r"--compile-bytecode \(--compile\), --no-progress, --link-mode, --output-format, --color, "
+        r"--break-system-packages, --strict, --no-python-downloads, --system-certs and --no-deps for uv"
     )
     with pytest.raises(DockerfileError, match=message):
         dockerfile_requirements(path, uv_installs=set())
@@ -3640,6 +3648,8 @@ def test_dockerfile_requirements_refuses_pip_only_flags_on_a_uv_line(tmp_path, f
         "--link-mode=copy",
         "--output-format json",
         "--output-format=text",
+        "--color never",
+        "--color=always",
         "--strict",
         "--no-python-downloads",
     ],
@@ -3674,6 +3684,10 @@ def test_dockerfile_requirements_refuses_uv_only_flags_on_a_pip_line(tmp_path, f
         "--output-format=bogus",
         "--output-format JSON",
         "--output-format",
+        "--color bogus",
+        "--color=bogus",
+        "--color AUTO",
+        "--color",
     ],
 )
 def test_dockerfile_requirements_refuses_a_value_uv_does_not_take(tmp_path, flags):
@@ -4642,6 +4656,8 @@ _INSTALL = "RUN pip install -r requirements.txt\n"
         ("RUN pip -q --no-color install -r requirements.txt\n", {}),
         ("RUN uv pip --no-progress install --system -r requirements.txt\n", {}),
         ("RUN uv pip --system-certs install --system -r requirements.txt\n", {}),
+        ("RUN uv pip --color never install --system -r requirements.txt\n", {}),
+        ("RUN uv pip --color=never install --system -r requirements.txt\n", {}),
         ("RUN /usr/local/bin/pip install -r /app/requirements.txt\n", {}),
         ("RUN cd / && pip install -r app/requirements.txt\n", {"shell": [4]}),
         ("RUN python -m venv /opt/venv && /opt/venv/bin/pip install -r requirements.txt\n", {"venv": [4]}),

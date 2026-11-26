@@ -1849,11 +1849,13 @@ _UV_GLOBAL_FLAGS = (
 _UV_VALUE_FLAGS = {
     "--link-mode": "clone|copy|hardlink|symlink",
     "--output-format": "text|json",
+    "--color": "auto|always|never",
 }  # uv's possible values; it exits on any other
+_UV_GLOBAL_VALUE_FLAGS = {"--color": _UV_VALUE_FLAGS["--color"]}
 _UV_FLAGS_READ = (
     "--system, -r FILE, -c FILE, --no-cache, --no-cache-dir, --upgrade (-U), --quiet (-q), "
-    "--compile-bytecode (--compile), --no-progress, --link-mode, --output-format, --break-system-packages, "
-    "--strict, --no-python-downloads, --system-certs and --no-deps"
+    "--compile-bytecode (--compile), --no-progress, --link-mode, --output-format, --color, "
+    "--break-system-packages, --strict, --no-python-downloads, --system-certs and --no-deps"
 )
 
 
@@ -3298,8 +3300,8 @@ class _RunReader:
     def _uv_sync(self, number, args, shown, stop):  # type: ignore[no-untyped-def]
         """`uv sync ARGS`: `uv sync --locked` or `--frozen` (so the lock copied into the image is what is
         installed), optionally `--no-dev`, `--no-install-project`, `--no-install-workspace`, `--no-install-local`,
-        `--no-editable`, `--compile-bytecode`/`--compile`, `--reinstall`, `--refresh`, `--inexact`, `--link-mode` and
-        `--output-format` with uv's values, and the harmless global flags."""
+        `--no-editable`, `--compile-bytecode`/`--compile`, `--reinstall`, `--refresh`, `--inexact`, `--link-mode`,
+        `--output-format` and `--color` with uv's values, and the harmless global flags."""
         if unknown := next((word for word in args if not word.exact), None):
             if both := next((name for name in self.ambiguous if re.search(rf"\$\{{?{name}\b", unknown.text)), None):
                 stop(
@@ -3345,8 +3347,8 @@ class _RunReader:
             stop(
                 f"`{shown}`: only `uv sync --locked` or `--frozen` (optionally `--no-dev`, `--no-install-project`, "
                 "`--no-install-workspace`, `--no-install-local`, `--no-editable`, `--compile-bytecode`/`--compile`, "
-                "`--reinstall`, `--refresh`, `--inexact`, or `--link-mode`/`--output-format` with uv's values) "
-                "is read by --dockerfile-inputs, and this one may change what is installed"
+                "`--reinstall`, `--refresh`, `--inexact`, or `--link-mode`/`--output-format`/`--color` with uv's "
+                "values) is read by --dockerfile-inputs, and this one may change what is installed"
             )
         if ("--locked" in seen) == ("--frozen" in seen):
             stop(
@@ -3358,8 +3360,20 @@ class _RunReader:
     def _pip(self, number, args, uv, uv_system, shown, stop):  # type: ignore[no-untyped-def]
         """`pip ARGS` or `uv pip ARGS`."""
         tool = "uv pip" if uv else "pip"
-        while args and args[0].text in (_UV_GLOBAL_FLAGS if uv else _PIP_GLOBAL_FLAGS):
-            args = args[1:]  # before the subcommand, as in `pip --no-cache-dir install`
+        while args:
+            if args[0].text in (_UV_GLOBAL_FLAGS if uv else _PIP_GLOBAL_FLAGS):
+                args = args[1:]  # before the subcommand, as in `pip --no-cache-dir install`
+                continue
+            if uv:
+                option, equals, value = args[0].text.partition("=")
+                if option in _UV_GLOBAL_VALUE_FLAGS:
+                    if equals and re.fullmatch(_UV_GLOBAL_VALUE_FLAGS[option], value):
+                        args = args[1:]
+                        continue
+                    if not equals and len(args) > 1 and re.fullmatch(_UV_GLOBAL_VALUE_FLAGS[option], args[1].text):
+                        args = args[2:]  # `uv pip --color never install`, a global option before the subcommand
+                        continue
+            break
         if not args:
             return "shell", ""
         subcommand = args[0].text if args[0].exact else None
