@@ -2539,6 +2539,9 @@ _UV_SYNC = "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nRUN 
         ("uv sync --frozen", False),
         ("uv sync --locked --no-dev", True),
         ("uv sync --no-dev --frozen", True),
+        ("uv sync --locked --no-install-project", False),
+        ("uv sync --frozen --no-editable", False),
+        ("uv sync --locked --no-install-project --no-editable --no-dev", True),
         # The harmless global flags pip install's reader also takes, after the subcommand.
         ("uv sync --quiet --locked", False),
         ("uv sync --locked --no-progress", False),
@@ -2592,14 +2595,13 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         # uv may relock without --locked/--frozen, or install a selection the flags change.
         ("uv sync", "needs exactly one of --locked or --frozen"),
         ("uv sync --no-dev", "needs exactly one of --locked or --frozen"),
+        ("uv sync --no-install-project", "needs exactly one of --locked or --frozen"),
         ("uv sync --locked --frozen", "needs exactly one of --locked or --frozen"),
         ("uv sync --locked --all-extras", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --all-groups", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --group test", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --no-group dev", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --extra cli", "only `uv sync --locked` or `--frozen`"),
-        ("uv sync --locked --no-install-project", "only `uv sync --locked` or `--frozen`"),
-        ("uv sync --locked --no-editable", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --python 3.12", "only `uv sync --locked` or `--frozen`"),
         # A flag before the subcommand isn't read, as `uv --quiet pip install` isn't.
         ("uv --quiet sync --locked", "of uv's commands, only `uv pip install --system -r FILE`"),
