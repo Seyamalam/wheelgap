@@ -2543,6 +2543,8 @@ _UV_SYNC = "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nRUN 
         ("uv sync --frozen --no-editable", False),
         ("uv sync --locked --no-install-workspace", False),
         ("uv sync --locked --no-install-local", False),
+        ("uv sync --locked --compile-bytecode", False),
+        ("uv sync --locked --compile", False),
         ("uv sync --locked --no-install-project --no-editable --no-dev", True),
         # The harmless global flags pip install's reader also takes, after the subcommand.
         ("uv sync --quiet --locked", False),
@@ -2600,6 +2602,7 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         ("uv sync --no-install-project", "needs exactly one of --locked or --frozen"),
         ("uv sync --no-install-workspace", "needs exactly one of --locked or --frozen"),
         ("uv sync --no-install-local", "needs exactly one of --locked or --frozen"),
+        ("uv sync --compile-bytecode", "needs exactly one of --locked or --frozen"),
         ("uv sync --locked --frozen", "needs exactly one of --locked or --frozen"),
         ("uv sync --locked --all-extras", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --all-groups", "only `uv sync --locked` or `--frozen`"),
