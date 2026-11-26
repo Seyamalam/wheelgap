@@ -3284,8 +3284,8 @@ class _RunReader:
     def _uv_sync(self, number, args, shown, stop):  # type: ignore[no-untyped-def]
         """`uv sync ARGS`: `uv sync --locked` or `--frozen` (so the lock copied into the image is what is
         installed), optionally `--no-dev`, `--no-install-project`, `--no-install-workspace`, `--no-install-local`,
-        `--no-editable`, `--compile-bytecode` or `--compile`, `--reinstall`, `--link-mode` with uv's values, and the
-        harmless global flags."""
+        `--no-editable`, `--compile-bytecode`/`--compile`, `--reinstall`, `--refresh`, `--link-mode` with uv's
+        values, and the harmless global flags."""
         if unknown := next((word for word in args if not word.exact), None):
             if both := next((name for name in self.ambiguous if re.search(rf"\$\{{?{name}\b", unknown.text)), None):
                 stop(
@@ -3317,6 +3317,7 @@ class _RunReader:
                 "--compile-bytecode",
                 "--compile",
                 "--reinstall",
+                "--refresh",
             ):
                 i += 1
                 continue
@@ -3329,9 +3330,9 @@ class _RunReader:
                 continue
             stop(
                 f"`{shown}`: only `uv sync --locked` or `--frozen` (optionally `--no-dev`, `--no-install-project`, "
-                "`--no-install-workspace`, `--no-install-local`, `--no-editable`, `--compile-bytecode` or `--compile`, "
-                "`--reinstall`, or `--link-mode` with uv's values) is read by --dockerfile-inputs, and this one may "
-                "change what is installed"
+                "`--no-install-workspace`, `--no-install-local`, `--no-editable`, `--compile-bytecode`/`--compile`, "
+                "`--reinstall`, `--refresh`, or `--link-mode` with uv's values) is read by --dockerfile-inputs, "
+                "and this one may change what is installed"
             )
         if ("--locked" in seen) == ("--frozen" in seen):
             stop(
@@ -3757,19 +3758,17 @@ def dockerfile_requirements(
     reads settings from (_copies_uv_config), a file not named *.txt or *.in, and a -r inside a constraints file
     (which uv reads as constraints) are errors as well.
 
-    `RUN uv sync --locked` or `--frozen` (optionally `--no-dev`, `--no-install-project`, `--no-install-workspace`,
-    `--no-install-local`, `--no-editable`, `--compile-bytecode` or `--compile`, `--reinstall`, `--link-mode` with
-    uv's values, and the harmless global flags) is read too: the uv.lock and pyproject.toml it reads in its working
-    folder are followed back to the build context like -r FILE is, the lock becomes the (line, file) pair the caller
-    checks as `wheelgap uv.lock` does, and `uv_syncs`, which must be given, collects each (line, lock) pair's (--no-dev,
-    the pyproject.toml it was resolved with, the Python its copied .python-version pins or None, that file or None).
-    The project must sit in the folder the line runs in (uv searches ancestors too, which isn't read), the lock
-    and pyproject.toml must come from beside each other in the build context (the lock's selection is read from
-    a pyproject.toml beside it on disk), a second `uv sync` line, a copied uv.toml or [tool.uv] table,
-    a .python-version one an earlier RUN writes or a COPY puts above the project's folder, a copied
-    .python-versions, a .python-version in uv's config folder, a copied .venv, a pin that isn't a CPython X.Y,
-    X.Y.Z or X.Yt, a requires-python the sync's Python doesn't satisfy, and UV_PROJECT_ENVIRONMENT are all
-    DockerfileError, naming the line.
+    `RUN uv sync --locked` or `--frozen` (with the optional flags `_uv_sync` reads) is read too: the uv.lock and
+    pyproject.toml it reads in its working folder are followed back to the build context like -r FILE is, the lock
+    becomes the (line, file) pair the caller checks as `wheelgap uv.lock` does, and `uv_syncs`, which must be given,
+    collects each (line, lock) pair's (--no-dev, the pyproject.toml it was resolved with, the Python its copied
+    .python-version pins or None, that file or None). The project must sit in the folder the line runs in (uv
+    searches ancestors too, which isn't read), the lock and pyproject.toml must come from beside each other in the
+    build context (the lock's selection is read from a pyproject.toml beside it on disk), a second `uv sync` line, a
+    copied uv.toml or [tool.uv] table, a .python-version one an earlier RUN writes or a COPY puts above the
+    project's folder, a copied .python-versions, a .python-version in uv's config folder, a copied .venv, a pin that
+    isn't a CPython X.Y, X.Y.Z or X.Yt, a requires-python the sync's Python doesn't satisfy, and
+    UV_PROJECT_ENVIRONMENT are all DockerfileError, naming the line.
     """
     try:
         text = path.read_bytes().decode("utf-8-sig")

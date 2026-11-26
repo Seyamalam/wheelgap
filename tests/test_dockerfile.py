@@ -2548,6 +2548,7 @@ _UV_SYNC = "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nRUN 
         ("uv sync --locked --link-mode copy", False),
         ("uv sync --locked --link-mode=hardlink", False),
         ("uv sync --locked --reinstall", False),
+        ("uv sync --locked --refresh", False),
         ("uv sync --locked --no-install-project --no-editable --no-dev", True),
         # The harmless global flags pip install's reader also takes, after the subcommand.
         ("uv sync --quiet --locked", False),
@@ -2608,6 +2609,7 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         ("uv sync --compile-bytecode", "needs exactly one of --locked or --frozen"),
         ("uv sync --link-mode copy", "needs exactly one of --locked or --frozen"),
         ("uv sync --reinstall", "needs exactly one of --locked or --frozen"),
+        ("uv sync --refresh", "needs exactly one of --locked or --frozen"),
         ("uv sync --locked --link-mode bogus", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --link-mode=bogus", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --link-mode", "only `uv sync --locked` or `--frozen`"),
