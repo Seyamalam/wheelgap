@@ -188,7 +188,7 @@ them (`--no-input`, `--disable-pip-version-check`, `--root-user-action`, `--pref
 | Flag | Read |
 | --- | --- |
 | `-r FILE` / `--requirement FILE` and `-c FILE` / `--constraint FILE` (uv also spells them `--requirements`, `--constraints`) | Only `*.txt` or `*.in` files: uv reads other names as locks, scripts or projects |
-| `--no-cache`, `--no-cache-dir`, `--upgrade` / `-U`, `-q` / `--quiet`, `--compile-bytecode` (and its alias `--compile`), `--no-progress`, `--break-system-packages`, `--strict` (it only warns after the install), `--no-python-downloads`, `--system-certs`, `--no-deps` | Taken with no value |
+| `--no-cache`, `--no-cache-dir`, `--upgrade` / `-U`, `-q` / `--quiet`, `--compile-bytecode` (and its alias `--compile`), `--no-progress`, `--reinstall` (the same requirements are installed again), `--break-system-packages`, `--strict` (it only warns after the install), `--no-python-downloads`, `--system-certs`, `--no-deps` | Taken with no value |
 | `--link-mode clone` / `copy` / `hardlink` / `symlink` (or `=copy`) | uv's only values |
 | `--output-format text` / `json` (or `=json`) | uv's only values: output alone |
 | `--color auto` / `always` / `never` (or `=never`) | uv's only values: output alone |
