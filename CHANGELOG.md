@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `--dockerfile-inputs`: a `uv sync --locked` or `--frozen` line and a read `uv pip install` line may also use `--reinstall-package NAME`: uv installs the same locked or exactly pinned distribution for that package again rather than changing which versions or artifacts it installs, so the answer is unchanged. (#776, thanks [@Seyamalam](https://github.com/Seyamalam))
 - `--dockerfile-inputs`: a `uv sync --locked` or `--frozen` line and a read `uv pip install` line may also use `--refresh-package NAME`: refreshing one package's cached data doesn't change locked or exactly pinned installations, so the answer is unchanged. (#775, thanks [@Seyamalam](https://github.com/Seyamalam))
 - `--dockerfile-inputs`: a read `uv pip install` line may also use `--refresh`: every requirement is pinned with `==`, so revalidating uv's cached data doesn't change which versions or artifacts it installs, and the answer is unchanged. (#774, thanks [@Seyamalam](https://github.com/Seyamalam))
 - `--dockerfile-inputs`: a read `uv pip install` line may also use `--reinstall`: every requirement is pinned with `==`, so uv installs the same pinned distributions again rather than changing which versions or artifacts it installs, and the answer is unchanged. (#773, thanks [@Seyamalam](https://github.com/Seyamalam))
