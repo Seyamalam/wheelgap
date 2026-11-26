@@ -3298,7 +3298,7 @@ class _RunReader:
     def _uv_sync(self, number, args, shown, stop):  # type: ignore[no-untyped-def]
         """`uv sync ARGS`: `uv sync --locked` or `--frozen` (so the lock copied into the image is what is
         installed), optionally `--no-dev`, `--no-install-project`, `--no-install-workspace`, `--no-install-local`,
-        `--no-editable`, `--compile-bytecode`/`--compile`, `--reinstall`, `--refresh`, `--link-mode` and
+        `--no-editable`, `--compile-bytecode`/`--compile`, `--reinstall`, `--refresh`, `--inexact`, `--link-mode` and
         `--output-format` with uv's values, and the harmless global flags."""
         if unknown := next((word for word in args if not word.exact), None):
             if both := next((name for name in self.ambiguous if re.search(rf"\$\{{?{name}\b", unknown.text)), None):
@@ -3331,6 +3331,7 @@ class _RunReader:
                 "--compile",
                 "--reinstall",
                 "--refresh",
+                "--inexact",
             ):
                 i += 1
                 continue
@@ -3344,8 +3345,8 @@ class _RunReader:
             stop(
                 f"`{shown}`: only `uv sync --locked` or `--frozen` (optionally `--no-dev`, `--no-install-project`, "
                 "`--no-install-workspace`, `--no-install-local`, `--no-editable`, `--compile-bytecode`/`--compile`, "
-                "`--reinstall`, `--refresh`, or `--link-mode`/`--output-format` with uv's values) is read by "
-                "--dockerfile-inputs, and this one may change what is installed"
+                "`--reinstall`, `--refresh`, `--inexact`, or `--link-mode`/`--output-format` with uv's values) "
+                "is read by --dockerfile-inputs, and this one may change what is installed"
             )
         if ("--locked" in seen) == ("--frozen" in seen):
             stop(
