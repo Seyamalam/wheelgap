@@ -3284,8 +3284,8 @@ class _RunReader:
     def _uv_sync(self, number, args, shown, stop):  # type: ignore[no-untyped-def]
         """`uv sync ARGS`: `uv sync --locked` or `--frozen` (so the lock copied into the image is what is
         installed), optionally `--no-dev`, `--no-install-project`, `--no-install-workspace`, `--no-install-local`,
-        `--no-editable`, `--compile-bytecode` or `--compile`, `--link-mode` with uv's values, and the harmless global
-        flags."""
+        `--no-editable`, `--compile-bytecode` or `--compile`, `--reinstall`, `--link-mode` with uv's values, and the
+        harmless global flags."""
         if unknown := next((word for word in args if not word.exact), None):
             if both := next((name for name in self.ambiguous if re.search(rf"\$\{{?{name}\b", unknown.text)), None):
                 stop(
@@ -3316,6 +3316,7 @@ class _RunReader:
                 "--no-editable",
                 "--compile-bytecode",
                 "--compile",
+                "--reinstall",
             ):
                 i += 1
                 continue
@@ -3329,8 +3330,8 @@ class _RunReader:
             stop(
                 f"`{shown}`: only `uv sync --locked` or `--frozen` (optionally `--no-dev`, `--no-install-project`, "
                 "`--no-install-workspace`, `--no-install-local`, `--no-editable`, `--compile-bytecode` or `--compile`, "
-                "or `--link-mode` with uv's values) is read by --dockerfile-inputs, and this one may change what "
-                "is installed"
+                "`--reinstall`, or `--link-mode` with uv's values) is read by --dockerfile-inputs, and this one may "
+                "change what is installed"
             )
         if ("--locked" in seen) == ("--frozen" in seen):
             stop(
@@ -3757,10 +3758,10 @@ def dockerfile_requirements(
     (which uv reads as constraints) are errors as well.
 
     `RUN uv sync --locked` or `--frozen` (optionally `--no-dev`, `--no-install-project`, `--no-install-workspace`,
-    `--no-install-local`, `--no-editable`, `--compile-bytecode` or `--compile`, `--link-mode` with uv's values,
-    and the harmless global flags) is read too: the uv.lock and pyproject.toml it reads in its working folder are
-    followed back to the build context like -r FILE is, the lock becomes the (line, file) pair the caller checks
-    as `wheelgap uv.lock` does, and `uv_syncs`, which must be given, collects each (line, lock) pair's (--no-dev,
+    `--no-install-local`, `--no-editable`, `--compile-bytecode` or `--compile`, `--reinstall`, `--link-mode` with
+    uv's values, and the harmless global flags) is read too: the uv.lock and pyproject.toml it reads in its working
+    folder are followed back to the build context like -r FILE is, the lock becomes the (line, file) pair the caller
+    checks as `wheelgap uv.lock` does, and `uv_syncs`, which must be given, collects each (line, lock) pair's (--no-dev,
     the pyproject.toml it was resolved with, the Python its copied .python-version pins or None, that file or None).
     The project must sit in the folder the line runs in (uv searches ancestors too, which isn't read), the lock
     and pyproject.toml must come from beside each other in the build context (the lock's selection is read from
