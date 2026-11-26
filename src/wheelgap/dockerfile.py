@@ -1837,11 +1837,14 @@ _UV_HARMLESS_FLAGS = (
 # uv's global options among them, which it also takes between `pip` and `install`; uv 0.13.1 exits on the others
 # there (`uv pip --compile-bytecode install`: "unexpected argument").
 _UV_GLOBAL_FLAGS = ("--no-cache", "--no-cache-dir", "-q", "--quiet", "--no-progress", "--no-python-downloads")
-_UV_VALUE_FLAGS = {"--link-mode": "clone|copy|hardlink|symlink"}  # uv's possible values; it exits on any other
+_UV_VALUE_FLAGS = {
+    "--link-mode": "clone|copy|hardlink|symlink",
+    "--output-format": "text|json",
+}  # uv's possible values; it exits on any other
 _UV_FLAGS_READ = (
     "--system, -r FILE, -c FILE, --no-cache, --no-cache-dir, --upgrade (-U), --quiet (-q), "
-    "--compile-bytecode (--compile), --no-progress, --link-mode, --break-system-packages, --strict, "
-    "--no-python-downloads and --no-deps"
+    "--compile-bytecode (--compile), --no-progress, --link-mode, --output-format, --break-system-packages, "
+    "--strict, --no-python-downloads and --no-deps"
 )
 
 
@@ -3286,8 +3289,8 @@ class _RunReader:
     def _uv_sync(self, number, args, shown, stop):  # type: ignore[no-untyped-def]
         """`uv sync ARGS`: `uv sync --locked` or `--frozen` (so the lock copied into the image is what is
         installed), optionally `--no-dev`, `--no-install-project`, `--no-install-workspace`, `--no-install-local`,
-        `--no-editable`, `--compile-bytecode`/`--compile`, `--reinstall`, `--refresh`, `--link-mode` with uv's
-        values, and the harmless global flags."""
+        `--no-editable`, `--compile-bytecode`/`--compile`, `--reinstall`, `--refresh`, `--link-mode` and
+        `--output-format` with uv's values, and the harmless global flags."""
         if unknown := next((word for word in args if not word.exact), None):
             if both := next((name for name in self.ambiguous if re.search(rf"\$\{{?{name}\b", unknown.text)), None):
                 stop(
@@ -3299,7 +3302,6 @@ class _RunReader:
                 "the Dockerfile, a command substitution or a glob)"
             )
         texts = [word.text for word in args]
-        link_modes = _UV_VALUE_FLAGS["--link-mode"]
         seen: set[str] = set()
         i = 0
         while i < len(texts):
@@ -3323,18 +3325,18 @@ class _RunReader:
             ):
                 i += 1
                 continue
-            if text == "--link-mode" and i + 1 < len(texts) and re.fullmatch(link_modes, texts[i + 1]):
+            if text in _UV_VALUE_FLAGS and i + 1 < len(texts) and re.fullmatch(_UV_VALUE_FLAGS[text], texts[i + 1]):
                 i += 2
                 continue
             option, equals, value = text.partition("=")
-            if equals and option == "--link-mode" and re.fullmatch(link_modes, value):
+            if equals and option in _UV_VALUE_FLAGS and re.fullmatch(_UV_VALUE_FLAGS[option], value):
                 i += 1
                 continue
             stop(
                 f"`{shown}`: only `uv sync --locked` or `--frozen` (optionally `--no-dev`, `--no-install-project`, "
                 "`--no-install-workspace`, `--no-install-local`, `--no-editable`, `--compile-bytecode`/`--compile`, "
-                "`--reinstall`, `--refresh`, or `--link-mode` with uv's values) is read by --dockerfile-inputs, "
-                "and this one may change what is installed"
+                "`--reinstall`, `--refresh`, or `--link-mode`/`--output-format` with uv's values) is read by "
+                "--dockerfile-inputs, and this one may change what is installed"
             )
         if ("--locked" in seen) == ("--frozen" in seen):
             stop(

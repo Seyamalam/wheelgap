@@ -2547,6 +2547,8 @@ _UV_SYNC = "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nRUN 
         ("uv sync --locked --compile", False),
         ("uv sync --locked --link-mode copy", False),
         ("uv sync --locked --link-mode=hardlink", False),
+        ("uv sync --locked --output-format json", False),
+        ("uv sync --locked --output-format=text", False),
         ("uv sync --locked --reinstall", False),
         ("uv sync --locked --refresh", False),
         ("uv sync --locked --no-install-project --no-editable --no-dev", True),
@@ -2618,11 +2620,15 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         ("uv sync --no-install-local", "needs exactly one of --locked or --frozen"),
         ("uv sync --compile-bytecode", "needs exactly one of --locked or --frozen"),
         ("uv sync --link-mode copy", "needs exactly one of --locked or --frozen"),
+        ("uv sync --output-format json", "needs exactly one of --locked or --frozen"),
         ("uv sync --reinstall", "needs exactly one of --locked or --frozen"),
         ("uv sync --refresh", "needs exactly one of --locked or --frozen"),
         ("uv sync --locked --link-mode bogus", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --link-mode=bogus", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --link-mode", "only `uv sync --locked` or `--frozen`"),
+        ("uv sync --locked --output-format bogus", "only `uv sync --locked` or `--frozen`"),
+        ("uv sync --locked --output-format=bogus", "only `uv sync --locked` or `--frozen`"),
+        ("uv sync --locked --output-format", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --frozen", "needs exactly one of --locked or --frozen"),
         ("uv sync --locked --all-extras", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --all-groups", "only `uv sync --locked` or `--frozen`"),
@@ -3561,6 +3567,8 @@ _UV_RUN = "FROM python:3.13\nWORKDIR /app\nCOPY {} ./\nRUN uv pip install --syst
         "--no-progress",
         "--link-mode copy",
         "--link-mode=copy",
+        "--output-format json",
+        "--output-format=text",
         "--break-system-packages",
         "--strict",
         "--no-python-downloads",
@@ -3608,8 +3616,8 @@ def test_dockerfile_requirements_refuses_pip_only_flags_on_a_uv_line(tmp_path, f
     message = (
         f":4: uv pip install {re.escape(flags.split()[0])}: --dockerfile-inputs only reads --system, -r FILE, "
         r"-c FILE, --no-cache, --no-cache-dir, --upgrade \(-U\), --quiet \(-q\), "
-        r"--compile-bytecode \(--compile\), --no-progress, --link-mode, --break-system-packages, --strict, "
-        r"--no-python-downloads and --no-deps for uv"
+        r"--compile-bytecode \(--compile\), --no-progress, --link-mode, --output-format, --break-system-packages, "
+        r"--strict, --no-python-downloads and --no-deps for uv"
     )
     with pytest.raises(DockerfileError, match=message):
         dockerfile_requirements(path, uv_installs=set())
@@ -3625,6 +3633,8 @@ def test_dockerfile_requirements_refuses_pip_only_flags_on_a_uv_line(tmp_path, f
         "--no-progress",
         "--link-mode copy",
         "--link-mode=copy",
+        "--output-format json",
+        "--output-format=text",
         "--strict",
         "--no-python-downloads",
     ],
@@ -3648,10 +3658,22 @@ def test_dockerfile_requirements_refuses_uv_only_flags_on_a_pip_line(tmp_path, f
     assert dockerfile_requirements(path, uv_installs=set()) == [(4, tmp_path / "requirements.txt")]
 
 
-@pytest.mark.parametrize("flags", ["--link-mode bogus", "--link-mode=bogus", "--link-mode Copy", "--link-mode"])
-def test_dockerfile_requirements_refuses_a_link_mode_uv_does_not_take(tmp_path, flags):
-    # uv exits on a --link-mode other than clone, copy, hardlink or symlink (`uv pip install --help`, uv 0.13.1),
-    # and the word after the flag is never taken for a requirement.
+@pytest.mark.parametrize(
+    "flags",
+    [
+        "--link-mode bogus",
+        "--link-mode=bogus",
+        "--link-mode Copy",
+        "--link-mode",
+        "--output-format bogus",
+        "--output-format=bogus",
+        "--output-format JSON",
+        "--output-format",
+    ],
+)
+def test_dockerfile_requirements_refuses_a_value_uv_does_not_take(tmp_path, flags):
+    # uv exits on a --link-mode other than clone, copy, hardlink or symlink, or an --output-format other than text
+    # or json (`uv pip install --help`, uv 0.13.1), and the word after the flag is never taken for a requirement.
     path = _context(tmp_path, _UV_RUN.format("requirements.txt", f"{flags} -r requirements.txt"))
     with pytest.raises(DockerfileError, match=rf":4: uv pip install {re.escape(flags.split()[0])}: "):
         dockerfile_requirements(path, uv_installs=set())
