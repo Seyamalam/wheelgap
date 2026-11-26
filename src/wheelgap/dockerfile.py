@@ -1850,15 +1850,18 @@ _UV_GLOBAL_FLAGS = (
     "--no-python-downloads",
     "--system-certs",
 )
+# uv's package names: ASCII letters or digits at both ends, with -, _ or . between; it exits on any other value.
+_UV_PACKAGE_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 _UV_VALUE_FLAGS = {
     "--link-mode": "clone|copy|hardlink|symlink",
     "--output-format": "text|json",
     "--color": "auto|always|never",
+    "--refresh-package": _UV_PACKAGE_NAME,
 }  # uv's possible values; it exits on any other
 _UV_GLOBAL_VALUE_FLAGS = {"--color": _UV_VALUE_FLAGS["--color"]}
 _UV_FLAGS_READ = (
     "--system, -r FILE, -c FILE, --no-cache, --no-cache-dir, --upgrade (-U), --quiet (-q), "
-    "--compile-bytecode (--compile), --no-progress, --reinstall, --refresh, "
+    "--compile-bytecode (--compile), --no-progress, --reinstall, --refresh, --refresh-package NAME, "
     "--link-mode, --output-format, --color, "
     "--break-system-packages, --strict, --no-python-downloads, --system-certs and --no-deps"
 )
@@ -3306,7 +3309,7 @@ class _RunReader:
         """`uv sync ARGS`: `uv sync --locked` or `--frozen` (so the lock copied into the image is what is
         installed), optionally `--no-dev`, `--no-install-project`, `--no-install-workspace`, `--no-install-local`,
         `--no-editable`, `--compile-bytecode`/`--compile`, `--reinstall`, `--refresh`, `--inexact`, `--link-mode`,
-        `--output-format` and `--color` with uv's values, and the harmless global flags."""
+        `--output-format`, `--color` and `--refresh-package` with uv's values, and the harmless global flags."""
         if unknown := next((word for word in args if not word.exact), None):
             if both := next((name for name in self.ambiguous if re.search(rf"\$\{{?{name}\b", unknown.text)), None):
                 stop(
@@ -3352,8 +3355,9 @@ class _RunReader:
             stop(
                 f"`{shown}`: only `uv sync --locked` or `--frozen` (optionally `--no-dev`, `--no-install-project`, "
                 "`--no-install-workspace`, `--no-install-local`, `--no-editable`, `--compile-bytecode`/`--compile`, "
-                "`--reinstall`, `--refresh`, `--inexact`, or `--link-mode`/`--output-format`/`--color` with uv's "
-                "values) is read by --dockerfile-inputs, and this one may change what is installed"
+                "`--reinstall`, `--refresh`, `--inexact`, or `--link-mode`/`--output-format`/`--color`/"
+                "`--refresh-package` with uv's values) is read by --dockerfile-inputs, and this one may change "
+                "what is installed"
             )
         if ("--locked" in seen) == ("--frozen" in seen):
             stop(
