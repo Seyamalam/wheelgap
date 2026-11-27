@@ -1850,13 +1850,14 @@ _UV_GLOBAL_FLAGS = (
     "--no-python-downloads",
     "--system-certs",
 )
-# uv's verbose output flag: repeatable, and counted when the short form is repeated (-vv is more verbose).
+# uv's output flags: repeatable, and counted when the short form is repeated (-qq is quieter, -vv more verbose).
+_UV_QUIET_RE = re.compile(r"-q+|--quiet")
 _UV_VERBOSE_RE = re.compile(r"-v+|--verbose")
 
 
 def _uv_quiet_verbose_conflict(texts: list[str]) -> bool:
     """uv exits when quiet and verbose are combined at one command level."""
-    return any(_UV_VERBOSE_RE.fullmatch(text) for text in texts) and any(text in ("-q", "--quiet") for text in texts)
+    return any(_UV_VERBOSE_RE.fullmatch(text) for text in texts) and any(_UV_QUIET_RE.fullmatch(text) for text in texts)
 
 
 # uv's package names: ASCII letters or digits at both ends, with -, _ or . between; it exits on any other value.
@@ -1884,7 +1885,7 @@ _UV_FLAGS_READ = (
 def _read_flag_words(rest: list[str], i: int, uv: bool) -> int:
     """How many words from `rest[i]` on are a flag that is read and ignored, with its value: 0 when `rest[i]` isn't
     one, or its value isn't one the installer takes (the installer exits then, and wheelgap refuses the line)."""
-    if uv and _UV_VERBOSE_RE.fullmatch(rest[i]):
+    if uv and (_UV_VERBOSE_RE.fullmatch(rest[i]) or _UV_QUIET_RE.fullmatch(rest[i])):
         return 1
     if rest[i] in (_UV_HARMLESS_FLAGS if uv else _PIP_HARMLESS_FLAGS):
         return 1
@@ -3344,7 +3345,7 @@ class _RunReader:
         i = 0
         while i < len(texts):
             text = texts[i]
-            if text in _UV_GLOBAL_FLAGS or _UV_VERBOSE_RE.fullmatch(text):
+            if text in _UV_GLOBAL_FLAGS or _UV_VERBOSE_RE.fullmatch(text) or _UV_QUIET_RE.fullmatch(text):
                 i += 1
                 continue
             if text in ("--locked", "--frozen", "--no-dev"):
@@ -3392,7 +3393,7 @@ class _RunReader:
         pre_install: list[str] = []
         while args:
             if args[0].text in (_UV_GLOBAL_FLAGS if uv else _PIP_GLOBAL_FLAGS) or (
-                uv and _UV_VERBOSE_RE.fullmatch(args[0].text)
+                uv and (_UV_VERBOSE_RE.fullmatch(args[0].text) or _UV_QUIET_RE.fullmatch(args[0].text))
             ):
                 pre_install.append(args[0].text)
                 args = args[1:]  # before the subcommand, as in `pip --no-cache-dir install`

@@ -188,7 +188,7 @@ them (`--no-input`, `--disable-pip-version-check`, `--root-user-action`, `--pref
 | Flag | Read |
 | --- | --- |
 | `-r FILE` / `--requirement FILE` and `-c FILE` / `--constraint FILE` (uv also spells them `--requirements`, `--constraints`) | Only `*.txt` or `*.in` files: uv reads other names as locks, scripts or projects |
-| `--no-cache`, `--no-cache-dir`, `--upgrade` / `-U`, `-q` / `--quiet`, `--compile-bytecode` (and its alias `--compile`), `--no-progress`, `--reinstall` (the same requirements are installed again), `--refresh` (cached data is only revalidated), `--break-system-packages`, `--strict` (it only warns after the install), `--no-python-downloads`, `--system-certs`, `--no-deps` | Taken with no value |
+| `--no-cache`, `--no-cache-dir`, `--upgrade` / `-U`, `-q` / `--quiet` (also `-qq` and further repetitions), `--compile-bytecode` (and its alias `--compile`), `--no-progress`, `--reinstall` (the same requirements are installed again), `--refresh` (cached data is only revalidated), `--break-system-packages`, `--strict` (it only warns after the install), `--no-python-downloads`, `--system-certs`, `--no-deps` | Taken with no value |
 | `-v` / `--verbose` (also `-vv` and further repetitions) | Output alone; repeatable, but uv exits when quiet and verbose are together before `install` or together after it |
 | `--link-mode clone` / `copy` / `hardlink` / `symlink` (or `=copy`) | uv's only values |
 | `--output-format text` / `json` (or `=json`) | uv's only values: output alone |
@@ -219,7 +219,7 @@ so is every other flag, since it may change the installed set.
 | `--no-editable-package NAME` (or `=NAME`) | uv's package names: it only decides whether a named first-party editable package is installed non-editably, not which locked dependencies are installed |
 | `--refresh-package NAME` (or `=NAME`) | uv's package names: only that package's cached data is revalidated, which doesn't change which locked dependencies are installed |
 | `--reinstall-package NAME` (or `=NAME`) | uv's package names: only that locked package is installed again, which doesn't change which locked dependencies are installed |
-| `-q` / `--quiet`, `--no-cache` / `--no-cache-dir`, `--no-progress`, `--no-python-downloads`, `--system-certs` | Taken with no value |
+| `-q` / `--quiet` (also `-qq` and further repetitions), `--no-cache` / `--no-cache-dir`, `--no-progress`, `--no-python-downloads`, `--system-certs` | Taken with no value |
 | `-v` / `--verbose` (also `-vv` and further repetitions) | Output alone; repeatable, but uv exits when quiet and verbose are combined |
 
 The line is the selection: `--extra`, `--all-extras`, `--group`, `--only-group` and `--no-dev` on wheelgap's command
