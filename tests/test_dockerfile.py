@@ -3641,6 +3641,9 @@ _UV_RUN = "FROM python:3.13\nWORKDIR /app\nCOPY {} ./\nRUN uv pip install --syst
         "-vv",
         "--verbose --verbose",
         "--break-system-packages",
+        "--no-break-system-packages",
+        "--break-system-packages --no-break-system-packages",
+        "--no-break-system-packages --break-system-packages",
         "--strict",
         "--no-python-downloads",
         "--system-certs",
@@ -3691,8 +3694,8 @@ def test_dockerfile_requirements_refuses_pip_only_flags_on_a_uv_line(tmp_path, f
         r"--verbose \(-v\), --compile-bytecode \(--compile\), --no-progress, --reinstall, --refresh, "
         r"--no-editable, --no-editable-package NAME, --refresh-package NAME, --reinstall-package NAME, --link-mode, "
         r"--output-format, --color, "
-        r"--keyring-provider, --break-system-packages, --strict, --no-python-downloads, --system-certs and "
-        r"--no-deps for uv"
+        r"--keyring-provider, --break-system-packages, --no-break-system-packages, --strict, "
+        r"--no-python-downloads, --system-certs and --no-deps for uv"
     )
     with pytest.raises(DockerfileError, match=message):
         dockerfile_requirements(path, uv_installs=set())
@@ -3715,6 +3718,7 @@ def test_dockerfile_requirements_refuses_pip_only_flags_on_a_uv_line(tmp_path, f
         "--keyring-provider disabled",
         "--keyring-provider=subprocess",
         "--no-editable",
+        "--no-break-system-packages",
         "--no-editable-package packaging",
         "--no-editable-package=packaging",
         "--strict",
@@ -3760,6 +3764,7 @@ def test_dockerfile_requirements_refuses_uv_only_flags_on_a_pip_line(tmp_path, f
         "--keyring-provider DISABLED",
         "--keyring-provider",
         "--no-editable=true",
+        "--no-break-system-packages=true",
         "--no-editable-package bad!",
         "--no-editable-package=bad!",
         "--no-editable-package é",
@@ -3804,11 +3809,12 @@ def test_dockerfile_requirements_refuses_uv_verbose_with_quiet(tmp_path, command
         dockerfile_requirements(path, uv_installs=set())
 
 
-def test_dockerfile_requirements_refuses_uv_no_editable_twice(tmp_path):
-    # uv exits when the flag is repeated.
-    command = "uv pip install --system --no-editable --no-editable -r requirements.txt"
+@pytest.mark.parametrize("flag", ["--no-editable", "--no-break-system-packages"])
+def test_dockerfile_requirements_refuses_uv_nonrepeatable_flag_twice(tmp_path, flag):
+    # uv exits when either flag is repeated.
+    command = f"uv pip install --system {flag} {flag} -r requirements.txt"
     path = _context(tmp_path, f"FROM python:3.13\nWORKDIR /app\nCOPY . .\nRUN {command}\n")
-    with pytest.raises(DockerfileError, match="uv exits when --no-editable is repeated"):
+    with pytest.raises(DockerfileError, match=rf"uv exits when {re.escape(flag)} is repeated"):
         dockerfile_requirements(path, uv_installs=set())
 
 

@@ -1836,6 +1836,7 @@ _UV_HARMLESS_FLAGS = (
     "--refresh",
     "--no-editable",
     "--break-system-packages",
+    "--no-break-system-packages",
     "--strict",
     "--no-python-downloads",
     "--system-certs",
@@ -1879,7 +1880,8 @@ _UV_FLAGS_READ = (
     "--no-editable, --no-editable-package NAME, --refresh-package NAME, --reinstall-package NAME, --link-mode, "
     "--output-format, --color, "
     "--keyring-provider, "
-    "--break-system-packages, --strict, --no-python-downloads, --system-certs and --no-deps"
+    "--break-system-packages, --no-break-system-packages, --strict, --no-python-downloads, --system-certs and "
+    "--no-deps"
 )
 
 
@@ -3420,6 +3422,8 @@ class _RunReader:
             stop(f"`{shown}`: uv's --quiet and --verbose conflict; drop one")
         if uv and [word.text for word in args].count("--no-editable") > 1:
             stop(f"`{shown}`: uv exits when --no-editable is repeated; drop one")
+        if uv and [word.text for word in args].count("--no-break-system-packages") > 1:
+            stop(f"`{shown}`: uv exits when --no-break-system-packages is repeated; drop one")
         # An unquoted name[extra] is a glob to the shell, which leaves it as written unless a file of that very
         # shape (the name plus one letter of the extras) is in the folder: read as the requirement it spells, once
         # read_install has checked that the folder holds no such file (_Install.globs).
