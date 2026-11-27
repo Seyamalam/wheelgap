@@ -1834,6 +1834,7 @@ _UV_HARMLESS_FLAGS = (
     "--no-progress",
     "--reinstall",
     "--refresh",
+    "--no-editable",
     "--break-system-packages",
     "--strict",
     "--no-python-downloads",
@@ -1875,7 +1876,7 @@ _UV_GLOBAL_VALUE_FLAGS = {"--color": _UV_VALUE_FLAGS["--color"]}
 _UV_FLAGS_READ = (
     "--system, -r FILE, -c FILE, --no-cache, --no-cache-dir, --upgrade (-U), --quiet (-q), "
     "--verbose (-v), --compile-bytecode (--compile), --no-progress, --reinstall, --refresh, "
-    "--no-editable-package NAME, --refresh-package NAME, --reinstall-package NAME, --link-mode, "
+    "--no-editable, --no-editable-package NAME, --refresh-package NAME, --reinstall-package NAME, --link-mode, "
     "--output-format, --color, "
     "--keyring-provider, "
     "--break-system-packages, --strict, --no-python-downloads, --system-certs and --no-deps"
@@ -3417,6 +3418,8 @@ class _RunReader:
             stop(f"`{shown}`: only `install` is read of {tool}'s commands, and this one may change what is installed")
         if uv and (_uv_quiet_verbose_conflict(pre_install) or _uv_quiet_verbose_conflict([word.text for word in args])):
             stop(f"`{shown}`: uv's --quiet and --verbose conflict; drop one")
+        if uv and [word.text for word in args].count("--no-editable") > 1:
+            stop(f"`{shown}`: uv exits when --no-editable is repeated; drop one")
         # An unquoted name[extra] is a glob to the shell, which leaves it as written unless a file of that very
         # shape (the name plus one letter of the extras) is in the folder: read as the requirement it spells, once
         # read_install has checked that the folder holds no such file (_Install.globs).

@@ -194,6 +194,7 @@ them (`--no-input`, `--disable-pip-version-check`, `--root-user-action`, `--pref
 | `--output-format text` / `json` (or `=json`) | uv's only values: output alone |
 | `--color auto` / `always` / `never` (or `=never`) | uv's only values: output alone |
 | `--keyring-provider disabled` / `subprocess` (or `=disabled`) | uv's only values: authentication alone, not which requirements are selected |
+| `--no-editable` | Taken with no value: editable lines are refused here, so this is a no-op for the pinned requirements that are read |
 | `--no-editable-package NAME` (or `=NAME`) | uv's package names: editable lines are refused here, so this is a no-op for the pinned requirements that are read |
 | `--refresh-package NAME` (or `=NAME`) | uv's package names: only that package's cached data is revalidated |
 | `--reinstall-package NAME` (or `=NAME`) | uv's package names: only that package is installed again |
