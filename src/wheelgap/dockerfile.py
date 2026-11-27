@@ -1839,8 +1839,8 @@ _UV_HARMLESS_FLAGS = (
     "--no-python-downloads",
     "--system-certs",
 )
-# uv's global options among them, which it also takes between `pip` and `install`; uv 0.13.1 exits on the others
-# there (`uv pip --compile-bytecode install`: "unexpected argument").
+# uv's global options among them, which it also takes between `pip` and `install`, as it does verbose below;
+# uv 0.13.1 exits on the others there (`uv pip --compile-bytecode install`: "unexpected argument").
 _UV_GLOBAL_FLAGS = (
     "--no-cache",
     "--no-cache-dir",
@@ -1850,6 +1850,15 @@ _UV_GLOBAL_FLAGS = (
     "--no-python-downloads",
     "--system-certs",
 )
+# uv's verbose output flag: repeatable, and counted when the short form is repeated (-vv is more verbose).
+_UV_VERBOSE_RE = re.compile(r"-v+|--verbose")
+
+
+def _uv_quiet_verbose_conflict(texts: list[str]) -> bool:
+    """uv exits when quiet and verbose are combined at one command level."""
+    return any(_UV_VERBOSE_RE.fullmatch(text) for text in texts) and any(text in ("-q", "--quiet") for text in texts)
+
+
 # uv's package names: ASCII letters or digits at both ends, with -, _ or . between; it exits on any other value.
 _UV_PACKAGE_NAME = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
 _UV_VALUE_FLAGS = {
@@ -1864,7 +1873,7 @@ _UV_VALUE_FLAGS = {
 _UV_GLOBAL_VALUE_FLAGS = {"--color": _UV_VALUE_FLAGS["--color"]}
 _UV_FLAGS_READ = (
     "--system, -r FILE, -c FILE, --no-cache, --no-cache-dir, --upgrade (-U), --quiet (-q), "
-    "--compile-bytecode (--compile), --no-progress, --reinstall, --refresh, "
+    "--verbose (-v), --compile-bytecode (--compile), --no-progress, --reinstall, --refresh, "
     "--no-editable-package NAME, --refresh-package NAME, --reinstall-package NAME, --link-mode, "
     "--output-format, --color, "
     "--keyring-provider, "
@@ -1875,6 +1884,8 @@ _UV_FLAGS_READ = (
 def _read_flag_words(rest: list[str], i: int, uv: bool) -> int:
     """How many words from `rest[i]` on are a flag that is read and ignored, with its value: 0 when `rest[i]` isn't
     one, or its value isn't one the installer takes (the installer exits then, and wheelgap refuses the line)."""
+    if uv and _UV_VERBOSE_RE.fullmatch(rest[i]):
+        return 1
     if rest[i] in (_UV_HARMLESS_FLAGS if uv else _PIP_HARMLESS_FLAGS):
         return 1
     values = _UV_VALUE_FLAGS if uv else _PIP_VALUE_FLAGS
@@ -3327,11 +3338,13 @@ class _RunReader:
                 "the Dockerfile, a command substitution or a glob)"
             )
         texts = [word.text for word in args]
+        if _uv_quiet_verbose_conflict(texts):
+            stop(f"`{shown}`: uv's --quiet and --verbose conflict; drop one")
         seen: set[str] = set()
         i = 0
         while i < len(texts):
             text = texts[i]
-            if text in _UV_GLOBAL_FLAGS:
+            if text in _UV_GLOBAL_FLAGS or _UV_VERBOSE_RE.fullmatch(text):
                 i += 1
                 continue
             if text in ("--locked", "--frozen", "--no-dev"):
@@ -3376,8 +3389,12 @@ class _RunReader:
     def _pip(self, number, args, uv, uv_system, shown, stop):  # type: ignore[no-untyped-def]
         """`pip ARGS` or `uv pip ARGS`."""
         tool = "uv pip" if uv else "pip"
+        pre_install: list[str] = []
         while args:
-            if args[0].text in (_UV_GLOBAL_FLAGS if uv else _PIP_GLOBAL_FLAGS):
+            if args[0].text in (_UV_GLOBAL_FLAGS if uv else _PIP_GLOBAL_FLAGS) or (
+                uv and _UV_VERBOSE_RE.fullmatch(args[0].text)
+            ):
+                pre_install.append(args[0].text)
                 args = args[1:]  # before the subcommand, as in `pip --no-cache-dir install`
                 continue
             if uv:
@@ -3397,6 +3414,8 @@ class _RunReader:
             return "pip", ""  # nothing is installed, and nothing is read
         if subcommand != "install":
             stop(f"`{shown}`: only `install` is read of {tool}'s commands, and this one may change what is installed")
+        if uv and (_uv_quiet_verbose_conflict(pre_install) or _uv_quiet_verbose_conflict([word.text for word in args])):
+            stop(f"`{shown}`: uv's --quiet and --verbose conflict; drop one")
         # An unquoted name[extra] is a glob to the shell, which leaves it as written unless a file of that very
         # shape (the name plus one letter of the extras) is in the folder: read as the requirement it spells, once
         # read_install has checked that the folder holds no such file (_Install.globs).

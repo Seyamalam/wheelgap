@@ -2556,6 +2556,10 @@ _UV_SYNC = "FROM python:3.13\nWORKDIR /app\nCOPY uv.lock pyproject.toml ./\nRUN 
         ("uv sync --locked --no-editable-package packaging", False),
         ("uv sync --locked --no-editable-package=packaging", False),
         ("uv sync --locked --no-editable-package packaging --no-editable-package other", False),
+        ("uv sync --locked -v", False),
+        ("uv sync --locked --verbose", False),
+        ("uv sync --locked -vv", False),
+        ("uv sync --locked --verbose --verbose", False),
         ("uv sync --locked --reinstall", False),
         ("uv sync --locked --refresh", False),
         ("uv sync --locked --refresh-package packaging", False),
@@ -2638,6 +2642,7 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         ("uv sync --color never", "needs exactly one of --locked or --frozen"),
         ("uv sync --keyring-provider disabled", "needs exactly one of --locked or --frozen"),
         ("uv sync --no-editable-package packaging", "needs exactly one of --locked or --frozen"),
+        ("uv sync --verbose", "needs exactly one of --locked or --frozen"),
         ("uv sync --reinstall", "needs exactly one of --locked or --frozen"),
         ("uv sync --refresh", "needs exactly one of --locked or --frozen"),
         ("uv sync --refresh-package packaging", "needs exactly one of --locked or --frozen"),
@@ -2659,6 +2664,7 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         ("uv sync --locked --no-editable-package=bad!", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --no-editable-package é", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --no-editable-package", "only `uv sync --locked` or `--frozen`"),
+        ("uv sync --locked --verbose=true", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --refresh-package bad!", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --refresh-package=bad!", "only `uv sync --locked` or `--frozen`"),
         ("uv sync --locked --refresh-package", "only `uv sync --locked` or `--frozen`"),
@@ -2675,6 +2681,8 @@ def test_dockerfile_inputs_uv_sync_follows_copies(tmp_path, copy, files, lock, p
         # A flag before the subcommand isn't read, as `uv --quiet pip install` isn't.
         ("uv --quiet sync --locked", "of uv's commands, only `uv pip install --system -r FILE`"),
         ("uv sync --locked $FLAGS", "isn't a value --dockerfile-inputs can read"),
+        ("uv sync --locked -q -v", "quiet and --verbose conflict"),
+        ("uv sync --locked -v --quiet", "quiet and --verbose conflict"),
     ],
 )
 def test_dockerfile_inputs_refuses_sync_flags_that_change_the_answer(tmp_path, run, message):
@@ -3618,6 +3626,10 @@ _UV_RUN = "FROM python:3.13\nWORKDIR /app\nCOPY {} ./\nRUN uv pip install --syst
         "--no-editable-package packaging",
         "--no-editable-package=packaging",
         "--no-editable-package packaging --no-editable-package other",
+        "-v",
+        "--verbose",
+        "-vv",
+        "--verbose --verbose",
         "--break-system-packages",
         "--strict",
         "--no-python-downloads",
@@ -3666,7 +3678,7 @@ def test_dockerfile_requirements_refuses_pip_only_flags_on_a_uv_line(tmp_path, f
     message = (
         f":4: uv pip install {re.escape(flags.split()[0])}: --dockerfile-inputs only reads --system, -r FILE, "
         r"-c FILE, --no-cache, --no-cache-dir, --upgrade \(-U\), --quiet \(-q\), "
-        r"--compile-bytecode \(--compile\), --no-progress, --reinstall, --refresh, "
+        r"--verbose \(-v\), --compile-bytecode \(--compile\), --no-progress, --reinstall, --refresh, "
         r"--no-editable-package NAME, --refresh-package NAME, --reinstall-package NAME, --link-mode, "
         r"--output-format, --color, "
         r"--keyring-provider, --break-system-packages, --strict, --no-python-downloads, --system-certs and "
@@ -3740,6 +3752,7 @@ def test_dockerfile_requirements_refuses_uv_only_flags_on_a_pip_line(tmp_path, f
         "--no-editable-package=bad!",
         "--no-editable-package é",
         "--no-editable-package",
+        "--verbose=true",
         "--refresh-package bad!",
         "--refresh-package=bad!",
         "--refresh-package é",
@@ -3756,6 +3769,22 @@ def test_dockerfile_requirements_refuses_a_value_uv_does_not_take(tmp_path, flag
     # a requirement.
     path = _context(tmp_path, _UV_RUN.format("requirements.txt", f"{flags} -r requirements.txt"))
     with pytest.raises(DockerfileError, match=rf":4: uv pip install {re.escape(flags.split()[0])}: "):
+        dockerfile_requirements(path, uv_installs=set())
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "uv pip install --system -q -v -r requirements.txt",
+        "uv pip install --system -v --quiet -r requirements.txt",
+        "uv pip -q -v install --system -r requirements.txt",
+        "uv pip -v -q install --system -r requirements.txt",
+    ],
+)
+def test_dockerfile_requirements_refuses_uv_verbose_with_quiet(tmp_path, command):
+    # uv exits when its repeatable output flags are combined at one command level, in either order.
+    path = _context(tmp_path, f"FROM python:3.13\nWORKDIR /app\nCOPY . .\nRUN {command}\n")
+    with pytest.raises(DockerfileError, match="quiet and --verbose conflict"):
         dockerfile_requirements(path, uv_installs=set())
 
 
@@ -4717,6 +4746,10 @@ _INSTALL = "RUN pip install -r requirements.txt\n"
         ("RUN pip -q --no-color install -r requirements.txt\n", {}),
         ("RUN uv pip --no-progress install --system -r requirements.txt\n", {}),
         ("RUN uv pip --system-certs install --system -r requirements.txt\n", {}),
+        ("RUN uv pip -v install --system -r requirements.txt\n", {}),
+        ("RUN uv pip -vv install --system -r requirements.txt\n", {}),
+        ("RUN uv pip -q install --system -v -r requirements.txt\n", {}),
+        ("RUN uv pip -v install --system --quiet -r requirements.txt\n", {}),
         ("RUN uv pip --color never install --system -r requirements.txt\n", {}),
         ("RUN uv pip --color=never install --system -r requirements.txt\n", {}),
         ("RUN /usr/local/bin/pip install -r /app/requirements.txt\n", {}),
