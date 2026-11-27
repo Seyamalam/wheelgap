@@ -7,9 +7,9 @@ when the check ran; new uploads and lockfile updates can change them.
 
 ## Summary
 
-The twenty-one studies below were scanned between 15 and 27 November 2026. Each result is for the pinned commit its
+The twenty-two studies below were scanned between 15 and 27 November 2026. Each result is for the pinned commit its
 page names and for wheelgap 0.13.0, except the mitmproxy study, which used wheelgap 0.10.0, and the dlt, Home Assistant
-Core and LangGraph studies, which used wheelgap 0.14.0. A project, or a package it
+Core, LangGraph and LangChain Core studies, which used wheelgap 0.14.0. A project, or a package it
 depends on, may have changed since.
 
 | Project | What was checked | Result | Gaps and fixes |
@@ -35,6 +35,7 @@ depends on, may have changed since.
 | [dlt](dlt.md) | Python 3.14; Linux, Windows, macOS; runtime dependencies (39 packages) | 1 source build and 1 missing | PyYAML 6.0.2's wheels stop at CPython 3.13, so it builds everywhere on 3.14 (6.0.3 has them). pywin32 310 has neither a CPython 3.14 Windows wheel nor a buildable sdist; 311 has the wheel |
 | [Home Assistant Core](home-assistant.md) | Python 3.14; Alpine on x86_64 and ARM64 (`musl-x86_64`, `musl-aarch64`); the container's `requirements.txt` (61 packages) and `requirements_all.txt` (1,255) | 4 source builds in the core file; 116 rows (112 distinct pins) in the full set | gazetteer-matcher 1.1.0, pymicro-vad 1.0.1, pyspeex-noise 1.0.2 and PyTurboJPEG 1.8.3 have no musllinux wheel on PyPI; PyTurboJPEG 2.5.0 does. Home Assistant's own wheel index lists a wheel for every one of the 112 pins, so its container build, which installs with `--no-build`, is not what these rows describe |
 | [LangGraph](langgraph.md) | Python 3.10 to 3.14; Linux; `libs/langgraph` with the `test` group (103 packages) | 1 source build | forbiddenfruit 0.1.4 has no wheel; it's reached only on Python 3.11 to 3.13, through langgraph-cli and blockbuster. 0.1.5 ships a `py3-none-any` wheel |
+| [LangChain Core](langchain.md) | Python 3.11 to 3.14; Linux; `libs/core` with the project dependencies, the `dev` group and the `test` group (146 packages) | 1 source build | forbiddenfruit 0.1.4 has no wheel; 0.1.5 ships a `py3-none-any` wheel |
 
 Unless a row says otherwise, Linux is `linux-x86_64` with a glibc 2.36 floor, Windows is `win-amd64`, and macOS is
 `macos-arm64` with a macOS 14.0 floor. A source build means the pinned version has an sdist but no wheel that fits the
@@ -68,8 +69,8 @@ These packages are a gap in more than one study:
 - **jiter 0.16.0** has wheels up to CPython 3.14 only; 0.17.0 has 3.15 wheels. Two studies: FastMCP and the MCP
   Python SDK (the opt-in `translate` group).
 - **forbiddenfruit 0.1.4** publishes only an sdist; 0.1.5, uploaded on 25 November 2026, has a `py3-none-any` wheel.
-  Three studies: Pydantic AI, the MCP Python SDK (the `dev` group, through blockbuster) and LangGraph (the `test`
-  group, through langgraph-cli and blockbuster).
+  Four studies: Pydantic AI, the MCP Python SDK (the `dev` group, through blockbuster), LangGraph (the `test`
+  group, through langgraph-cli and blockbuster) and LangChain Core (the `test` group, through blockbuster).
 
 ## The studies
 
@@ -94,3 +95,4 @@ These packages are a gap in more than one study:
 - [dlt: two runtime gaps on Python 3.14, both fixed one release up](dlt.md)
 - [Home Assistant Core: four PyPI gaps in the container requirements, covered by the project's own wheels](home-assistant.md)
 - [LangGraph: test dependencies on Python 3.10–3.14](langgraph.md)
+- [LangChain Core: one test-dependency gap, fixed one release up](langchain.md)
